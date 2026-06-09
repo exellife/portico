@@ -189,8 +189,16 @@ Reading it honestly:
   on quality, not portico's ceiling.
 - **WS tails are worse than HTTP** at the same rate: an HTTP response is written
   inline in the handler, but the WS echo round-trips through the per-thread MPSC
-  queue + a self-wakeup *even for a same-thread send*. Bypassing the queue for
-  same-thread sends is the obvious latency win for the WS path.
+  queue + a self-wakeup even for a same-thread send.
+
+  **Tried and rejected — same-thread send fast path.** The "obvious" fix was to
+  detect a send issued on the connection's own event thread and write the frame
+  inline instead of queueing it. Measured A/B (3 runs each, WS 100k): it made the
+  tail *worse* — p99 ~340→520 µs, p99.9 ~900 µs→1.5 ms. The MPSC path's
+  **batching** is a feature: draining the queue and sending all echoes together,
+  then returning to epoll quickly, beats interleaving a `send()` syscall into the
+  read loop per frame. Reverted. The real WS-tail levers are batched/buffered
+  writes with EPOLLOUT backpressure, not bypassing the queue.
 
 ### Soak
 
