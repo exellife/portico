@@ -115,7 +115,39 @@ rises toward ~16–20 KB/conn. Extrapolating from 45 GiB RAM: ~2 M active
 connections is the memory ceiling (idle would go far higher), assuming `MAX_CONNS`
 and the fd limit are raised to match. **150 k tested with zero failures.**
 
-### Stability
+### Stability — bugs this harness found
 
-- **ThreadSanitizer** under concurrent HTTP + WS + fuzz load: _(see run log)_
-- **Long soak** (RSS / fd over time): _(see run log)_
+The `fuzz` mode (malformed frames + pre-handshake garbage at high concurrency)
+plus ASan/TSan builds surfaced real bugs:
+
+- **Connection-leak DoS (fixed, commit 4db52ad).** A lost-message race in the
+  lock-free MPSC dequeue left `head` NULL permanently once a producer swapped
+  `tail` during the "empty the queue" step. New-connection messages were then
+  silently dropped: accepted sockets were never registered in epoll, piled up
+  unread in `CLOSE_WAIT`, and the server stopped responding. Observable as
+  `ss -tan` CLOSE_WAIT climbing and never recovering, fds growing, throughput
+  collapsing. Fixed; CLOSE_WAIT now returns to ~0 after load and fuzz throughput
+  rose ~60×.
+- **MPSC bounded-batch stranding (fixed).** Only 50 messages drained per
+  edge-triggered eventfd wakeup; the rest waited for a wakeup that might never
+  come. Now drains the whole queue per wakeup.
+- **Node-pool ABA race (fixed).** Treiber-stack free list could hand one node to
+  two owners under contention (TSan-confirmed). Now serialized with a small
+  per-queue mutex.
+- **Known remaining (TSan, pre-existing):** send-to-reused-fd cross-talk (an
+  echo queued for a closed fd can hit a freshly-accepted one) and a
+  connection-slot init vs global-hash-remove race. Both need a generation/epoch
+  or ref-protected send; tracked as follow-ups.
+
+How to reproduce the leak class:
+```sh
+PORT=8090 THREADS=4 ./build/stress_server &
+/tmp/loadtest -mode fuzz -conns 40 -dur 12s &
+watch -n1 "ss -tan '( sport = :8090 )' | awk 'NR>1 && \$1==\"CLOSE-WAIT\"' | wc -l"
+# pre-fix: climbs into the hundreds and never recovers. post-fix: stays ~0.
+```
+
+### Soak
+
+Sustained HTTP + WS + fuzz cycles with periodic RSS/fd/CLOSE_WAIT sampling — RSS
+and fd count stay flat, CLOSE_WAIT returns to ~0 between cycles (no slow leak).
