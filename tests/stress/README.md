@@ -151,6 +151,47 @@ watch -n1 "ss -tan '( sport = :8090 )' | awk 'NR>1 && \$1==\"CLOSE-WAIT\"' | wc 
 # pre-fix: climbs into the hundreds and never recovers. post-fix: stays ~0.
 ```
 
+### Latency (`latency.c`)
+
+A dedicated **C** client (no GC) that measures latency honestly:
+- **Open-loop / fixed-rate** — sends on a schedule and measures each request from
+  its *intended* send time, so a stall shows up on every request queued behind it
+  (avoids coordinated omission, which a closed-loop client hides).
+- **No runtime jitter** — plain C, no allocation in the steady-state loop.
+- Pin client and server to **disjoint cores**.
+
+```sh
+gcc -O2 -o /tmp/latency tests/stress/latency.c -lpthread
+taskset -c 0-7  env PORT=8090 THREADS=8 ./build/stress_server &
+taskset -c 8-31 /tmp/latency -mode http -conns 6 -rate 200000 -dur 6s -warmup 1.5s
+#   -mode http|ws  -conns N  -rate <total req/s>  -size <ws bytes>  -dur 6s  -warmup 1.5s
+```
+
+Results on this box (32c/45G, **single host** — client + server share the machine):
+
+| Offered load | HTTP p50 / p99.9 / p99.99 | WS p50 / p99.9 |
+|---|---|---|
+| floor (1 conn, 10k/s) | 81 / 287 / 404 µs | 76 / 565 µs |
+| 50k req/s | ~100 / 300 / 450 µs | ~100 / 350 µs |
+| 200k req/s | 85 µs / **1.7 ms** / 3.9 ms | 89 µs / **~20 ms** |
+| 500k req/s | 98 µs / 17 ms | saturates |
+| 1M req/s | saturates (8 server threads) | — |
+
+Reading it honestly:
+- **Median latency is excellent and flat** (~80–290 µs) across the whole range —
+  typical-case latency is very good.
+- **Sub-millisecond tails up to ~50–100k req/s** (p99.9 ≈ 300 µs). This is the
+  clean, reproducible result.
+- **The tail grows with load**, and past ~200k req/s a meaningful chunk of that
+  is the *measurement* (single box; the client busy-spins to pace and runs two
+  threads per connection, so at high rates it contends for its own cores). A
+  definitive high-load tail needs **two physical hosts** — this number is a floor
+  on quality, not portico's ceiling.
+- **WS tails are worse than HTTP** at the same rate: an HTTP response is written
+  inline in the handler, but the WS echo round-trips through the per-thread MPSC
+  queue + a self-wakeup *even for a same-thread send*. Bypassing the queue for
+  same-thread sends is the obvious latency win for the WS path.
+
 ### Soak
 
 Sustained HTTP + WS + fuzz cycles with periodic RSS/fd/CLOSE_WAIT sampling — RSS
