@@ -561,7 +561,7 @@ int handle_connection_write(ws_event_thread_t *thread, int fd) {
 
     /* EPOLLOUT is armed only by the HTTP backpressure path; drain pending bytes
      * there. A -1 return means the write failed or a deferred close finished. */
-    if (portico_http_on_writable(thread, conn) < 0) {
+    if (portico_conn_on_writable(thread, conn) < 0) {
         close_connection(thread, fd);
         return -1;
     }

@@ -119,39 +119,56 @@ int process_new_connection(int fd, const struct sockaddr_storage *client_addr, s
     return 0;
 }
 
+/* Encode a data frame and queue it through the connection's EPOLLOUT-backed
+ * out_buffer instead of a single raw send(). A raw send() on a non-blocking
+ * socket truncates/drops the frame the moment the peer's window fills (a slow
+ * consumer = silent feed gaps); buffering holds it and drains on writability,
+ * and lets bursts batch. Bounded by the out_buffer cap — past that, the frame
+ * is dropped (graceful degradation; a slow-consumer disconnect is a follow-up). */
+static int ws_buffered_data_send(ws_event_thread_t *thread, int fd, uint8_t opcode,
+                                 const void *data, size_t len) {
+    ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
+    if (!conn) return -1;   /* connection gone (closed/reused) — drop */
+
+    uint8_t *frame;
+    size_t frame_len;
+    if (ws_encode_frame(opcode, (const uint8_t *)data, len, &frame, &frame_len) != 0) {
+        return -1;
+    }
+    int rc = portico_conn_send(thread, conn, frame, frame_len);
+    free(frame);
+    return rc;
+}
+
 int process_text_message(int fd, const char *data, size_t len, void *context) {
     ws_event_thread_t *thread = (ws_event_thread_t*)context;
-    if (!thread || fd < 0 || !data) {
+    if (!thread || fd < 0 || (!data && len > 0)) {
         return -1;
     }
 
-    WS_DEBUG_LOG("Thread %u: Processing outbound text message for fd=%d (%zu bytes)", 
+    WS_DEBUG_LOG("Thread %u: Processing outbound text message for fd=%d (%zu bytes)",
                  thread->thread_id, fd, len);
 
-    /* Send text frame directly */
-    if (ws_send_text_frame(fd, data, len) < 0) {
+    if (ws_buffered_data_send(thread, fd, WS_OPCODE_TEXT, data, len) < 0) {
         WS_ERROR_LOG("Thread %u: Failed to send text frame to fd=%d", thread->thread_id, fd);
         return -1;
     }
-
     return 0;
 }
 
 int process_binary_message(int fd, const void *data, size_t len, void *context) {
     ws_event_thread_t *thread = (ws_event_thread_t*)context;
-    if (!thread || fd < 0 || !data) {
+    if (!thread || fd < 0 || (!data && len > 0)) {
         return -1;
     }
 
-    WS_DEBUG_LOG("Thread %u: Processing outbound binary message for fd=%d (%zu bytes)", 
+    WS_DEBUG_LOG("Thread %u: Processing outbound binary message for fd=%d (%zu bytes)",
                  thread->thread_id, fd, len);
 
-    /* Send binary frame directly */
-    if (ws_send_binary_frame(fd, data, len) < 0) {
+    if (ws_buffered_data_send(thread, fd, WS_OPCODE_BINARY, data, len) < 0) {
         WS_ERROR_LOG("Thread %u: Failed to send binary frame to fd=%d", thread->thread_id, fd);
         return -1;
     }
-
     return 0;
 }
 

@@ -197,8 +197,17 @@ Reading it honestly:
   tail *worse* — p99 ~340→520 µs, p99.9 ~900 µs→1.5 ms. The MPSC path's
   **batching** is a feature: draining the queue and sending all echoes together,
   then returning to epoll quickly, beats interleaving a `send()` syscall into the
-  read loop per frame. Reverted. The real WS-tail levers are batched/buffered
-  writes with EPOLLOUT backpressure, not bypassing the queue.
+  read loop per frame. Reverted.
+
+  **Shipped — WS send-path EPOLLOUT buffering.** WS data frames went out via a
+  single raw `send()`, which truncates/drops the frame the instant a slow
+  consumer's window fills (a silent feed gap). They now route through the same
+  per-connection `out_buffer` + EPOLLOUT drain as HTTP responses: buffer what the
+  socket won't take, drain on writability, bounded by a 4 MB cap. Verified — a
+  2500-frame burst against a non-reading client lost **7 frames before, 0 after**;
+  latency is unchanged (the MPSC batching is preserved, so no fast-path-style
+  regression); Autobahn 246/246, TSan/ASan clean. A slow-consumer disconnect at
+  the cap (vs the current drop-past-cap) remains a follow-up.
 
 ### Soak
 

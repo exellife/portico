@@ -481,7 +481,13 @@ int portico_http_event(ws_event_thread_t *thread, ws_connection_t *conn, ws_serv
 /* EPOLLOUT handler for the HTTP path: drains conn->out_buffer (queued response
  * bytes a slow peer hasn't read yet) without blocking the event thread. Returns
  * 0 to keep the connection, -1 if it was closed (fatal write error). */
-int portico_http_on_writable(ws_event_thread_t *thread, ws_connection_t *conn);
+int portico_conn_on_writable(ws_event_thread_t *thread, ws_connection_t *conn);
+
+/* Queue bytes for sending on a connection with EPOLLOUT backpressure (buffers
+ * what the socket can't take, never blocks). Shared by HTTP responses and WS
+ * frame sends. Returns 0 ok, -1 on fatal error / backpressure-cap overflow. */
+int portico_conn_send(ws_event_thread_t *thread, ws_connection_t *conn,
+                      const void *buf, size_t len);
 
 /* UTF-8 validation for text frames / close reasons (ws_utf8.c). */
 int ws_utf8_valid(const unsigned char *s, size_t len);

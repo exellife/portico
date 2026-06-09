@@ -103,9 +103,11 @@ static int conn_out_append(ws_connection_t *conn, const void *buf, size_t len) {
 
 /* Queue `buf` for sending on `conn`. Sends what it can immediately and buffers
  * the rest (arming EPOLLOUT) rather than blocking the event thread on a slow
- * reader. Returns 0 ok, -1 on fatal error / backpressure overflow. */
-static int portico_conn_send(ws_event_thread_t *thread, ws_connection_t *conn,
-                             const void *buf, size_t len) {
+ * reader. Returns 0 ok, -1 on fatal error / backpressure overflow. Shared by the
+ * HTTP response path and the WS frame send path (a connection is HTTP xor WS, so
+ * they never contend for the same out_buffer). */
+int portico_conn_send(ws_event_thread_t *thread, ws_connection_t *conn,
+                      const void *buf, size_t len) {
     /* Preserve ordering: if a backlog exists, everything queues behind it. */
     if (conn->out_used > conn->out_sent)
         return conn_out_append(conn, buf, len);
@@ -154,8 +156,9 @@ static int http_error_close(ws_event_thread_t *thread, ws_connection_t *conn, in
 }
 
 /* EPOLLOUT handler: drain the pending-out buffer; disarm EPOLLOUT when empty
- * and finish a deferred close. Returns 0 to keep the connection, -1 to close. */
-int portico_http_on_writable(ws_event_thread_t *thread, ws_connection_t *conn) {
+ * and finish a deferred close. Returns 0 to keep the connection, -1 to close.
+ * Generic over HTTP and WS — it just drains conn->out_buffer. */
+int portico_conn_on_writable(ws_event_thread_t *thread, ws_connection_t *conn) {
     if (conn_out_drain(conn) < 0) return -1;          /* fatal write error */
     if (conn->out_used > conn->out_sent) return 0;    /* still backlogged, stay armed */
     conn_set_epollout(thread, conn->fd, 0);           /* drained: disarm EPOLLOUT */
