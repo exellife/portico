@@ -30,6 +30,8 @@ typedef struct {
 
 typedef struct {
     int fd;                        /* Target connection file descriptor */
+    ws_connection_t *conn;         /* Owning slot (stable array memory) */
+    uint32_t generation;           /* Slot generation when queued (see ws_connection.h) */
     size_t data_len;               /* Length of data */
     char data[];                   /* Variable length data */
 } ws_msg_send_data_t;
@@ -472,7 +474,8 @@ int ws_mpsc_send_new_connection(ws_mpsc_queue_t *queue, int fd,
     return ws_mpsc_queue_enqueue(queue, node);
 }
 
-int ws_mpsc_send_text_message(ws_mpsc_queue_t *queue, int fd, const char *data, size_t len) {
+int ws_mpsc_send_text_message(ws_mpsc_queue_t *queue, int fd, ws_connection_t *conn,
+                              uint32_t generation, const char *data, size_t len) {
     if (!queue || (!data && len > 0)) {   /* portico: allow zero-length text frames */
         return -1;
     }
@@ -491,8 +494,10 @@ int ws_mpsc_send_text_message(ws_mpsc_queue_t *queue, int fd, const char *data, 
     }
 
     msg->fd = fd;
+    msg->conn = conn;
+    msg->generation = generation;
     msg->data_len = len;
-    memcpy(msg->data, data, len);
+    if (len > 0) memcpy(msg->data, data, len);
 
     node->data = msg;
     node->data_size = msg_size;
@@ -501,7 +506,8 @@ int ws_mpsc_send_text_message(ws_mpsc_queue_t *queue, int fd, const char *data, 
     return ws_mpsc_queue_enqueue(queue, node);
 }
 
-int ws_mpsc_send_binary_message(ws_mpsc_queue_t *queue, int fd, const void *data, size_t len) {
+int ws_mpsc_send_binary_message(ws_mpsc_queue_t *queue, int fd, ws_connection_t *conn,
+                                uint32_t generation, const void *data, size_t len) {
     if (!queue || (!data && len > 0)) {   /* portico: allow zero-length frames */
         return -1;
     }
@@ -520,6 +526,8 @@ int ws_mpsc_send_binary_message(ws_mpsc_queue_t *queue, int fd, const void *data
     }
 
     msg->fd = fd;
+    msg->conn = conn;
+    msg->generation = generation;
     msg->data_len = len;
     if (len > 0) memcpy(msg->data, data, len);
 
@@ -697,16 +705,25 @@ int ws_mpsc_process_messages(ws_mpsc_queue_t *queue, ws_mpsc_message_processor_t
             }
             
             case WS_MSG_SEND_TEXT: {
-                if (processor->process_text_message) {
-                    ws_msg_send_data_t *msg = (ws_msg_send_data_t*)node->data;
+                ws_msg_send_data_t *msg = (ws_msg_send_data_t*)node->data;
+                /* Drop the send if the slot was recycled since it was queued
+                 * (fd/slot reuse) — otherwise the payload could be delivered to
+                 * a different connection now occupying the same fd. The slot is
+                 * stable array memory, so reading conn->generation/state is safe;
+                 * this runs on the owning thread, serialized with close. */
+                if (processor->process_text_message && msg->conn &&
+                    msg->conn->generation == msg->generation &&
+                    msg->conn->state == WS_STATE_OPEN) {
                     result = processor->process_text_message(msg->fd, msg->data, msg->data_len, processor->context);
                 }
                 break;
             }
-            
+
             case WS_MSG_SEND_BINARY: {
-                if (processor->process_binary_message) {
-                    ws_msg_send_data_t *msg = (ws_msg_send_data_t*)node->data;
+                ws_msg_send_data_t *msg = (ws_msg_send_data_t*)node->data;
+                if (processor->process_binary_message && msg->conn &&
+                    msg->conn->generation == msg->generation &&
+                    msg->conn->state == WS_STATE_OPEN) {
                     result = processor->process_binary_message(msg->fd, msg->data, msg->data_len, processor->context);
                 }
                 break;

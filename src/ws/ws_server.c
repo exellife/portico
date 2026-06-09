@@ -504,7 +504,7 @@ int ws_send_text_internal(ws_server_t *server, int fd, const char *data, size_t 
     
     /* Send message to the appropriate event thread */
     ws_event_thread_t *target_thread = &internal->threads[conn->thread_id];
-    if (ws_mpsc_send_text_message(target_thread->message_queue, fd, data, len) < 0) {
+    if (ws_mpsc_send_text_message(target_thread->message_queue, fd, conn, conn->generation, data, len) < 0) {
         WS_ERROR_LOG("Failed to queue text message for fd=%d", fd);
         ws_connection_unref(conn); /* Release reference */
         return WS_ERROR_QUEUE_FULL;
@@ -544,7 +544,7 @@ int ws_send_binary_internal(ws_server_t *server, int fd, const void *data, size_
     
     /* Send message to the appropriate event thread */
     ws_event_thread_t *target_thread = &internal->threads[conn->thread_id];
-    if (ws_mpsc_send_binary_message(target_thread->message_queue, fd, data, len) < 0) {
+    if (ws_mpsc_send_binary_message(target_thread->message_queue, fd, conn, conn->generation, data, len) < 0) {
         WS_ERROR_LOG("Failed to queue binary message for fd=%d", fd);
         ws_connection_unref(conn); /* Release reference */
         return WS_ERROR_QUEUE_FULL;

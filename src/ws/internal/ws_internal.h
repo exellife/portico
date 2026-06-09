@@ -412,8 +412,10 @@ ws_mpsc_node_t* ws_mpsc_queue_dequeue(ws_mpsc_queue_t *queue);
 /* High-level message operations (producer side) */
 int ws_mpsc_send_new_connection(ws_mpsc_queue_t *queue, int fd, 
                                 const struct sockaddr_storage *client_addr, socklen_t client_addr_len);
-int ws_mpsc_send_text_message(ws_mpsc_queue_t *queue, int fd, const char *data, size_t len);
-int ws_mpsc_send_binary_message(ws_mpsc_queue_t *queue, int fd, const void *data, size_t len);
+int ws_mpsc_send_text_message(ws_mpsc_queue_t *queue, int fd, ws_connection_t *conn,
+                              uint32_t generation, const char *data, size_t len);
+int ws_mpsc_send_binary_message(ws_mpsc_queue_t *queue, int fd, ws_connection_t *conn,
+                                uint32_t generation, const void *data, size_t len);
 int ws_mpsc_send_ping_message(ws_mpsc_queue_t *queue, int fd, const void *data, size_t len);
 int ws_mpsc_send_pong_message(ws_mpsc_queue_t *queue, int fd, const void *data, size_t len);
 int ws_mpsc_send_close_message(ws_mpsc_queue_t *queue, int fd, ws_close_code_t code, const char *reason);

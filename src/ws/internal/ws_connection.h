@@ -64,7 +64,13 @@ struct ws_connection {
     /* Thread assignment */
     uint16_t thread_id;            /* Which thread handles this connection */
     uint16_t pool_index;           /* Index in thread's connection array */
-    
+
+    /* Reuse generation: bumped on every ws_connection_init. A cross-thread
+     * message (e.g. a queued send) captures the generation it was created for;
+     * the consumer drops it if the slot has since been recycled, so an echo
+     * can't be delivered to a different connection that reused the fd/slot. */
+    uint32_t generation;
+
     /* Client information (second cache line) */
     struct sockaddr_storage client_addr; /* Client address (128 bytes) */
     
@@ -101,10 +107,20 @@ struct ws_connection {
     #endif
 };
 
+/* A bucket entry keys on the fd VALUE, stored here rather than read from the
+ * connection slot during traversal. The slot is recyclable array memory whose
+ * fd field a producer can overwrite under no lock (ws_connection_init); keeping
+ * the key in the entry means find/remove never touch the slot to match, so the
+ * lookup can't race with a slot being re-initialized. */
+typedef struct {
+    uint32_t fd;
+    ws_connection_t *conn;
+} ws_hash_entry_t;
+
 /* Hierarchical hash table for connection lookup (millions of connections) */
 typedef struct {
     /* Level 1: 256 buckets based on high bits of hash */
-    ws_connection_t **level1[256];
+    ws_hash_entry_t *level1[256];
     uint32_t level1_sizes[256];    /* Size of each level1 bucket */
     uint32_t level1_capacities[256]; /* Capacity of each level1 bucket */
     

@@ -74,7 +74,7 @@ int ws_connection_hash_insert(ws_connection_hash_t *hash, ws_connection_t *conn)
 
     /* Allocate/reallocate bucket if needed */
     if (hash->level1[bucket] == NULL) {
-        hash->level1[bucket] = malloc(sizeof(ws_connection_t*) * 32);
+        hash->level1[bucket] = malloc(sizeof(ws_hash_entry_t) * 32);
         if (!hash->level1[bucket]) {
             pthread_rwlock_unlock(&hash->level1_locks[bucket]);
             return -1;
@@ -83,8 +83,8 @@ int ws_connection_hash_insert(ws_connection_hash_t *hash, ws_connection_t *conn)
     } else if (hash->level1_sizes[bucket] >= hash->level1_capacities[bucket]) {
         /* Bucket is full - expand it dynamically */
         uint32_t new_capacity = hash->level1_capacities[bucket] * 2; /* Double capacity */
-        ws_connection_t **new_bucket = realloc(hash->level1[bucket], 
-                                              sizeof(ws_connection_t*) * new_capacity);
+        ws_hash_entry_t *new_bucket = realloc(hash->level1[bucket],
+                                              sizeof(ws_hash_entry_t) * new_capacity);
         if (!new_bucket) {
             /* Realloc failed - this is a critical error */
             atomic_fetch_add(&hash->hash_collisions, 1);
@@ -93,12 +93,13 @@ int ws_connection_hash_insert(ws_connection_hash_t *hash, ws_connection_t *conn)
         }
         hash->level1[bucket] = new_bucket;
         hash->level1_capacities[bucket] = new_capacity;
-        WS_DEBUG_LOG("Expanded hash bucket %u from %u to %u slots", 
+        WS_DEBUG_LOG("Expanded hash bucket %u from %u to %u slots",
                      bucket, hash->level1_capacities[bucket] / 2, new_capacity);
     }
 
-    /* Insert connection */
-    hash->level1[bucket][hash->level1_sizes[bucket]] = conn;
+    /* Insert connection, keying on the fd value captured here. */
+    hash->level1[bucket][hash->level1_sizes[bucket]].fd = conn->fd;
+    hash->level1[bucket][hash->level1_sizes[bucket]].conn = conn;
     hash->level1_sizes[bucket]++;
     atomic_fetch_add(&hash->total_connections, 1);
 
@@ -118,10 +119,11 @@ ws_connection_t* ws_connection_hash_find(ws_connection_hash_t *hash, int fd) {
 
     ws_connection_t *result = NULL;
     if (hash->level1[bucket]) {
-        /* Linear search in bucket */
+        /* Linear search in bucket — compares the entry's stored fd, never the
+         * (recyclable) slot's fd field. */
         for (uint32_t i = 0; i < hash->level1_sizes[bucket]; i++) {
-            if (hash->level1[bucket][i] && hash->level1[bucket][i]->fd == (uint32_t)fd) {
-                result = hash->level1[bucket][i];
+            if (hash->level1[bucket][i].fd == (uint32_t)fd) {
+                result = hash->level1[bucket][i].conn;
                 break;
             }
         }
@@ -143,10 +145,10 @@ ws_connection_t* ws_connection_hash_find_and_ref(ws_connection_hash_t *hash, int
 
     ws_connection_t *result = NULL;
     if (hash->level1[bucket]) {
-        /* Linear search in bucket */
+        /* Linear search in bucket — compares the entry's stored fd. */
         for (uint32_t i = 0; i < hash->level1_sizes[bucket]; i++) {
-            if (hash->level1[bucket][i] && hash->level1[bucket][i]->fd == (uint32_t)fd) {
-                result = hash->level1[bucket][i];
+            if (hash->level1[bucket][i].fd == (uint32_t)fd) {
+                result = hash->level1[bucket][i].conn;
                 /* Take a reference while holding the lock */
                 ws_connection_ref(result);
                 break;
@@ -170,15 +172,16 @@ int ws_connection_hash_remove(ws_connection_hash_t *hash, int fd) {
 
     int result = -1;
     if (hash->level1[bucket]) {
-        /* Find and remove connection */
+        /* Find and remove by stored fd (never reads the slot). */
         for (uint32_t i = 0; i < hash->level1_sizes[bucket]; i++) {
-            if (hash->level1[bucket][i] && hash->level1[bucket][i]->fd == (uint32_t)fd) {
+            if (hash->level1[bucket][i].fd == (uint32_t)fd) {
                 /* Move last element to this position */
                 hash->level1_sizes[bucket]--;
                 if (i < hash->level1_sizes[bucket]) {
                     hash->level1[bucket][i] = hash->level1[bucket][hash->level1_sizes[bucket]];
                 }
-                hash->level1[bucket][hash->level1_sizes[bucket]] = NULL;
+                hash->level1[bucket][hash->level1_sizes[bucket]].fd = 0;
+                hash->level1[bucket][hash->level1_sizes[bucket]].conn = NULL;
                 atomic_fetch_sub(&hash->total_connections, 1);
                 result = 0;
                 break;
@@ -197,8 +200,12 @@ int ws_connection_hash_remove(ws_connection_hash_t *hash, int fd) {
 void ws_connection_init(ws_connection_t *conn, int fd, uint16_t thread_id, uint16_t pool_index) {
     if (!conn) return;
 
+    /* Preserve and bump the reuse generation across the wipe. The slots array is
+     * calloc'd, so a never-used slot starts at 0 and its first init yields 1. */
+    uint32_t next_generation = conn->generation + 1;
     memset(conn, 0, sizeof(ws_connection_t));
-    
+    conn->generation = next_generation;
+
     conn->fd = (uint32_t)fd;
     conn->state = WS_STATE_CONNECTING;
     conn->thread_id = thread_id;
@@ -260,8 +267,12 @@ void ws_connection_cleanup(ws_connection_t *conn) {
         conn->out_sent = 0;
     }
 
-    /* Note: Buffer cleanup and socket closing handled by caller */
+    /* Note: Buffer cleanup and socket closing handled by caller. Preserve the
+     * reuse generation across the wipe so it stays monotonic per slot — the
+     * next init bumps it again, distinguishing this slot's successive lives. */
+    uint32_t gen = conn->generation;
     memset(conn, 0, sizeof(ws_connection_t));
+    conn->generation = gen;
 }
 
 void ws_connection_set_state(ws_connection_t *conn, ws_state_t state) {
