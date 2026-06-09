@@ -23,8 +23,9 @@ struct portico_response {
 /* Parse one request from `buf` (length `len`) using picohttpparser.
  * Returns: >0 = total request length consumed (header + body) and fills `req`;
  *           0 = incomplete, need more bytes;
- *          -1 = malformed (reply 400);
- *          -2 = body exceeds PORTICO_MAX_BODY (reply 413). */
+ *          -1 = malformed / ambiguous framing (reply 400);
+ *          -2 = body exceeds PORTICO_MAX_BODY (reply 413);
+ *          -3 = uses Transfer-Encoding, which is unsupported (reply 501). */
 int portico_http_parse(const char *buf, size_t len, portico_request_t *req);
 
 /* Reason phrase for a status code (e.g. 404 -> "Not Found"). */

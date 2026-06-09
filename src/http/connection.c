@@ -23,7 +23,9 @@ static int read_into_recv(ws_connection_t *conn) {
     for (;;) {
         if (conn->recv_buffer_used == conn->recv_buffer_capacity) {
             if (conn->recv_buffer_capacity >= hard_max) return 0;  /* let parser 413/400 */
-            size_t nc = conn->recv_buffer_capacity * 2;
+            /* Floor the growth: a 0 capacity (prior alloc failure) must not make
+             * the doubling stall at 0. */
+            size_t nc = conn->recv_buffer_capacity ? conn->recv_buffer_capacity * 2 : 16384;
             if (nc > hard_max) nc = hard_max;
             uint8_t *nb = realloc(conn->recv_buffer, nc);
             if (!nb) return -1;
@@ -70,6 +72,7 @@ static int process_http_buffer(ws_connection_t *conn, ws_server_internal_t *serv
         }
         if (total == -1) { portico_http_send_status(conn->fd, 400, 0); return -1; }
         if (total == -2) { portico_http_send_status(conn->fd, 413, 0); return -1; }
+        if (total == -3) { portico_http_send_status(conn->fd, 501, 0); return -1; }
 
         /* Dispatch to the application handler. */
         portico_response_t res;

@@ -1,6 +1,7 @@
 #include "http_internal.h"
 #include "picohttpparser.h"
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>   /* strncasecmp */
@@ -32,16 +33,57 @@ const char *portico_req_header(const portico_request_t *req, const char *name,
 
 /* ---- parsing --------------------------------------------------------------- */
 
-static long header_long(const portico_request_t *req, const char *name, long dflt) {
-    size_t vlen;
-    const char *v = portico_req_header(req, name, &vlen);
-    if (!v) return dflt;
-    char tmp[32];
-    if (vlen == 0 || vlen >= sizeof tmp) return dflt;
-    memcpy(tmp, v, vlen); tmp[vlen] = '\0';
-    char *end;
-    long val = strtol(tmp, &end, 10);
-    return (end == tmp) ? dflt : val;
+/* Resolve the request's body framing in a smuggling-resistant way (RFC 7230
+ * §3.3.3). Sets *clen_out to the Content-Length (0 if absent). Returns:
+ *    0  ok
+ *   -1  ambiguous/illegal framing -> caller replies 400
+ *   -3  Transfer-Encoding present  -> caller replies 501 (chunked unsupported)
+ * Rules enforced:
+ *   - Transfer-Encoding in any form is rejected (we don't decode chunked, and
+ *     silently ignoring it lets a chunked-aware proxy smuggle a second request).
+ *   - Multiple Content-Length headers, or a single header carrying a comma list,
+ *     are rejected unless every value is identical.
+ *   - A Content-Length value must be a non-empty run of ASCII digits only —
+ *     no sign, whitespace, or trailing junk that a peer might parse differently. */
+static int resolve_body_framing(const portico_request_t *req, long *clen_out) {
+    *clen_out = 0;
+
+    int have_clen = 0;
+    long agreed = 0;
+    for (size_t i = 0; i < req->num_headers; i++) {
+        const portico_header_t *h = &req->headers[i];
+        if (h->name_len == 17 && strncasecmp(h->name, "Transfer-Encoding", 17) == 0)
+            return -3;   /* not implemented */
+        if (!(h->name_len == 14 && strncasecmp(h->name, "Content-Length", 14) == 0))
+            continue;
+
+        /* A value may itself be a comma-separated list (e.g. "5, 5"); every
+         * element must be a valid digit-run and they must all agree. */
+        size_t start = 0;
+        const char *v = h->value;
+        size_t vlen = h->value_len;
+        for (size_t j = 0; j <= vlen; j++) {
+            if (j == vlen || v[j] == ',') {
+                /* trim spaces/tabs around [start, j) */
+                size_t a = start, b = j;
+                while (a < b && (v[a] == ' ' || v[a] == '\t')) a++;
+                while (b > a && (v[b-1] == ' ' || v[b-1] == '\t')) b--;
+                if (a == b) return -1;            /* empty element */
+                long val = 0;
+                for (size_t k = a; k < b; k++) {
+                    if (v[k] < '0' || v[k] > '9') return -1;   /* non-digit */
+                    if (val > (LONG_MAX - (v[k] - '0')) / 10) return -1; /* overflow */
+                    val = val * 10 + (v[k] - '0');
+                }
+                if (have_clen && val != agreed) return -1;     /* disagreement */
+                agreed = val; have_clen = 1;
+                start = j + 1;
+            }
+        }
+    }
+
+    *clen_out = have_clen ? agreed : 0;
+    return 0;
 }
 
 static int header_token_present(const portico_request_t *req, const char *name,
@@ -91,8 +133,9 @@ int portico_http_parse(const char *buf, size_t len, portico_request_t *req) {
     }
 
     /* body framing via Content-Length (chunked not yet supported) */
-    long clen = header_long(req, "Content-Length", 0);
-    if (clen < 0) return -1;
+    long clen;
+    int fr = resolve_body_framing(req, &clen);
+    if (fr != 0) return fr;   /* -1 -> 400, -3 -> 501 */
     if (clen > PORTICO_MAX_BODY) return -2;
 
     size_t total = (size_t)pret + (size_t)clen;

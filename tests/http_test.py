@@ -152,6 +152,38 @@ def main(host, port):
         r.check("oversized headers -> 431", False, repr(e))
     c.close()
 
+    section("request-smuggling hardening")
+    # Transfer-Encoding is unsupported and must be rejected (501), never
+    # silently ignored — ignoring it lets a chunked-aware proxy smuggle a
+    # second request hidden in the chunk body.
+    c = HTTP(host, port)
+    c.send(b"POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
+           b"Connection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+    try:
+        s, h, b = c.recv_response(); r.check("Transfer-Encoding -> 501", s == 501, f"got {s}")
+    except Exception as e:
+        r.check("Transfer-Encoding -> 501", False, repr(e))
+    c.close()
+    # Two disagreeing Content-Length headers are ambiguous -> 400.
+    c = HTTP(host, port)
+    c.send(b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n"
+           b"Content-Length: 6\r\nConnection: close\r\n\r\nhello")
+    try:
+        s, h, b = c.recv_response(); r.check("conflicting Content-Length -> 400", s == 400, f"got {s}")
+    except Exception as e:
+        r.check("conflicting Content-Length -> 400", False, repr(e))
+    c.close()
+    # Non-digit Content-Length (sign / trailing junk) -> 400.
+    for label, val in [("plus-sign", b"+5"), ("trailing-junk", b"5 junk")]:
+        c = HTTP(host, port)
+        c.send(b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: " + val +
+               b"\r\nConnection: close\r\n\r\nhello")
+        try:
+            s, h, b = c.recv_response(); r.check(f"Content-Length {label} -> 400", s == 400, f"got {s}")
+        except Exception as e:
+            r.check(f"Content-Length {label} -> 400", False, repr(e))
+        c.close()
+
     section("HTTP/1.0 default close")
     c = HTTP(host, port)
     c.send(req("GET", "/health", version="1.0")); s, h, b = c.recv_response()
