@@ -1,0 +1,13 @@
+# build outputs
+/build/
+/build-*/
+*.o
+*.a
+*.so
+*.out
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
