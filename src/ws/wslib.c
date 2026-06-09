@@ -77,7 +77,7 @@ int ws_server_wait(ws_server_t *server) {
  * ============================================================================ */
 
 int ws_send_text(ws_server_t *server, int fd, const char *data, size_t len) {
-    if (!server || fd < 0 || !data) return -1;
+    if (!server || fd < 0 || (!data && len > 0)) return -1;  /* portico: allow zero-length */
     return ws_send_text_internal(server, fd, data, len);
 }
 

@@ -381,23 +381,36 @@ int ws_send_pong_frame(int fd, const void *data, size_t len) {
 }
 
 int ws_send_close_frame(int fd, uint16_t code, const char *reason) {
+    /* RFC 6455 §5.5.1: a Close frame may carry an empty payload (no status
+     * code). code == 0 is the sentinel for that — never a real close code. */
+    if (code == 0) {
+        uint8_t *empty_frame;
+        size_t empty_len;
+        if (ws_encode_frame(WS_OPCODE_CLOSE, NULL, 0, &empty_frame, &empty_len) != 0) {
+            return -1;
+        }
+        ssize_t es = send(fd, empty_frame, empty_len, MSG_NOSIGNAL);
+        free(empty_frame);
+        return (es == (ssize_t)empty_len) ? 0 : -1;
+    }
+
     size_t reason_len = reason ? strlen(reason) : 0;
     size_t payload_len = 2 + reason_len; /* 2 bytes for close code + reason */
     uint8_t *payload = malloc(payload_len);
-    
+
     if (!payload) {
         return -1;
     }
-    
+
     /* Encode close code in network byte order */
     payload[0] = (code >> 8) & 0xFF;
     payload[1] = code & 0xFF;
-    
+
     /* Copy reason string */
     if (reason_len > 0) {
         memcpy(payload + 2, reason, reason_len);
     }
-    
+
     uint8_t *frame_data;
     size_t frame_len;
     

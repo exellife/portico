@@ -450,7 +450,7 @@ int ws_mpsc_send_new_connection(ws_mpsc_queue_t *queue, int fd,
 }
 
 int ws_mpsc_send_text_message(ws_mpsc_queue_t *queue, int fd, const char *data, size_t len) {
-    if (!queue || !data || len == 0) {
+    if (!queue || (!data && len > 0)) {   /* portico: allow zero-length text frames */
         return -1;
     }
 

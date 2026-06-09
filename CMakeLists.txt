@@ -51,6 +51,8 @@ if(PORTICO_BUILD_EXAMPLES)
     target_link_libraries(echo_server PRIVATE portico)
     add_executable(http_server examples/http_server.c)
     target_link_libraries(http_server PRIVATE portico)
+    add_executable(autobahn_server examples/autobahn_server.c)
+    target_link_libraries(autobahn_server PRIVATE portico)
 endif()
 
 # --- tests ---

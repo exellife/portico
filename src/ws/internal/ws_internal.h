@@ -472,6 +472,9 @@ void close_connection(ws_event_thread_t *thread, int fd);
 int portico_initial_dispatch(ws_event_thread_t *thread, ws_connection_t *conn, ws_server_internal_t *server);
 int portico_http_event(ws_event_thread_t *thread, ws_connection_t *conn, ws_server_internal_t *server);
 
+/* UTF-8 validation for text frames / close reasons (ws_utf8.c). */
+int ws_utf8_valid(const unsigned char *s, size_t len);
+
 /* Handshake functions */
 int ws_parse_handshake_request(const char *request, ws_handshake_info_t *info);
 int ws_create_handshake_response(const ws_handshake_info_t *info, const char *selected_protocol,

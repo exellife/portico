@@ -11,3 +11,6 @@
 .idea/
 *.swp
 .DS_Store
+
+# Autobahn|Testsuite generated reports
+tests/autobahn/reports/

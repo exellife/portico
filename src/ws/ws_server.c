@@ -484,7 +484,7 @@ ws_connection_t* ws_find_connection_internal(ws_server_t *server, int fd) {
 }
 
 int ws_send_text_internal(ws_server_t *server, int fd, const char *data, size_t len) {
-    if (!server || fd < 0 || !data) return WS_ERROR_INVALID_ARGS;
+    if (!server || fd < 0 || (!data && len > 0)) return WS_ERROR_INVALID_ARGS;  /* portico: allow zero-length */
 
     ws_server_internal_t *internal = (ws_server_internal_t*)server;
     

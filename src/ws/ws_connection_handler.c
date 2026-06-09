@@ -221,9 +221,40 @@ int handle_websocket_frames(ws_event_thread_t *thread, ws_connection_t *conn, ws
     return 0;
 }
 
+/* Fail the connection per RFC 6455 §7.1.7: send a Close frame with the given
+ * status code, mark the connection closing, and signal the read loop to tear it
+ * down. Returns WS_FRAME_CLOSE_REQUESTED so callers propagate the clean close. */
+static int ws_fail_connection(ws_connection_t *conn, uint16_t code) {
+    ws_connection_set_state(conn, WS_STATE_CLOSING);
+    ws_send_close_frame(conn->fd, code, "");
+    return WS_FRAME_CLOSE_REQUESTED;
+}
+
+/* RFC 6455 §7.4.1: 1000-1003, 1007-1011 are defined; 3000-4999 are reserved for
+ * application/registered use. Everything else (incl. 1004-1006, 1012-2999, and
+ * >4999) is invalid when received in a Close frame. */
+static bool ws_close_code_valid(uint16_t code) {
+    if (code >= 3000 && code <= 4999) return true;
+    switch (code) {
+        case 1000: case 1001: case 1002: case 1003:
+        case 1007: case 1008: case 1009: case 1010: case 1011:
+            return true;
+        default:
+            return false;
+    }
+}
+
 int process_websocket_frame(ws_event_thread_t *thread, ws_connection_t *conn, ws_server_internal_t *server, const ws_frame_t *frame) {
     if (!thread || !conn || !server || !frame) {
         return -1;
+    }
+
+    /* RFC 6455 §5.5: control frames (opcode >= 0x8) MUST NOT be fragmented and
+     * MUST have a payload <= 125 bytes. Violations are protocol errors. */
+    if (frame->opcode >= 0x8 && (!frame->fin || frame->payload_len > 125)) {
+        WS_ERROR_LOG("Thread %u: Invalid control frame (fin=%d, len=%lu) on fd=%d",
+                     thread->thread_id, frame->fin, frame->payload_len, conn->fd);
+        return ws_fail_connection(conn, WS_CLOSE_PROTOCOL_ERROR);
     }
 
     WS_DEBUG_LOG("Thread %u: Processing frame opcode=%d, fin=%d, payload_len=%lu on fd=%d", 
@@ -271,30 +302,53 @@ int process_websocket_frame(ws_event_thread_t *thread, ws_connection_t *conn, ws
             /* Close frame */
             WS_DEBUG_LOG("Thread %u: Received close frame on fd=%d", thread->thread_id, conn->fd);
             
-            /* Extract close code and reason */
-            ws_close_code_t close_code = WS_CLOSE_NORMAL;
-            const char *close_reason = "";
-            
+            /* RFC 6455 §5.5.1: a Close payload is either empty or >= 2 bytes
+             * (2-byte code + optional reason). A 1-byte payload is malformed. */
+            if (frame->payload_len == 1) {
+                WS_ERROR_LOG("Thread %u: 1-byte close payload on fd=%d", thread->thread_id, conn->fd);
+                return ws_fail_connection(conn, WS_CLOSE_PROTOCOL_ERROR);
+            }
+
+            /* No-status close (empty payload): echo a bare close, code 1005 is
+             * never put on the wire. */
+            uint16_t close_code = WS_CLOSE_NORMAL;
+            const uint8_t *reason = NULL;
+            size_t reason_len = 0;
+
             if (frame->payload_len >= 2) {
-                close_code = (frame->payload[0] << 8) | frame->payload[1];
-                if (frame->payload_len > 2) {
-                    close_reason = (const char*)(frame->payload + 2);
+                close_code = (uint16_t)((frame->payload[0] << 8) | frame->payload[1]);
+                reason = frame->payload + 2;
+                reason_len = frame->payload_len - 2;
+
+                /* §7.4.1: reject undefined/reserved close codes. */
+                if (!ws_close_code_valid(close_code)) {
+                    WS_ERROR_LOG("Thread %u: Invalid close code %u on fd=%d",
+                                 thread->thread_id, close_code, conn->fd);
+                    return ws_fail_connection(conn, WS_CLOSE_PROTOCOL_ERROR);
+                }
+
+                /* §7.1.5: the close reason MUST be valid UTF-8. */
+                if (reason_len > 0 && !ws_utf8_valid(reason, reason_len)) {
+                    WS_ERROR_LOG("Thread %u: Invalid UTF-8 in close reason on fd=%d",
+                                 thread->thread_id, conn->fd);
+                    return ws_fail_connection(conn, WS_CLOSE_INVALID_UTF8);
                 }
             }
-            
-            /* Update connection state */
+
             ws_connection_set_state(conn, WS_STATE_CLOSING);
-            
-            /* Send close response if we haven't already */
-            if (ws_send_close_frame(conn->fd, close_code, close_reason) < 0) {
-                WS_ERROR_LOG("Thread %u: Failed to send close response on fd=%d", thread->thread_id, conn->fd);
+
+            /* Echo the peer's close code back (§7.1.4). Reason is not echoed —
+             * a bare code is a compliant response. */
+            if (frame->payload_len >= 2) {
+                ws_send_close_frame(conn->fd, close_code, "");
+            } else {
+                ws_send_close_frame(conn->fd, 0, NULL); /* empty payload */
             }
-            
-            /* Call application close callback */
+
             if (server->callbacks.on_close) {
-                server->callbacks.on_close(conn->fd, close_code, close_reason, NULL);
+                server->callbacks.on_close(conn->fd, close_code, "", NULL);
             }
-            
+
             return WS_FRAME_CLOSE_REQUESTED; /* clean close handshake — not an error */
 
         case WS_OPCODE_CONTINUATION:
@@ -358,10 +412,19 @@ int process_fragmented_frame(ws_event_thread_t *thread, ws_connection_t *conn,
         WS_DEBUG_LOG("Thread %u: Processing complete single frame, opcode=%d, payload_len=%lu on fd=%d", 
                      thread->thread_id, frame->opcode, frame->payload_len, conn->fd);
         
+        if (frame->opcode == WS_OPCODE_TEXT) {
+            /* RFC 6455 §5.6: text frames MUST carry valid UTF-8. */
+            if (!ws_utf8_valid(frame->payload, frame->payload_len)) {
+                WS_ERROR_LOG("Thread %u: Invalid UTF-8 in text frame on fd=%d",
+                             thread->thread_id, conn->fd);
+                return ws_fail_connection(conn, WS_CLOSE_INVALID_UTF8);
+            }
+        }
+
         if (frame->opcode == WS_OPCODE_TEXT && server->callbacks.on_text_message) {
-            WS_DEBUG_LOG("Thread %u: Calling on_text_message callback with %lu bytes on fd=%d", 
+            WS_DEBUG_LOG("Thread %u: Calling on_text_message callback with %lu bytes on fd=%d",
                          thread->thread_id, frame->payload_len, conn->fd);
-            
+
             /* Ensure null termination for text frames */
             char *text_data = malloc(frame->payload_len + 1);
             if (!text_data) {
@@ -431,6 +494,15 @@ int process_continuation_frame(ws_event_thread_t *thread, ws_connection_t *conn,
         WS_DEBUG_LOG("Thread %u: Completed fragmented message of %zu bytes on fd=%d", 
                      thread->thread_id, parser->fragment_total_size, conn->fd);
         
+        /* RFC 6455 §5.6: a reassembled text message MUST be valid UTF-8. */
+        if (parser->fragment_opcode == WS_OPCODE_TEXT &&
+            !ws_utf8_valid(parser->fragment_buffer, parser->fragment_total_size)) {
+            WS_ERROR_LOG("Thread %u: Invalid UTF-8 in reassembled text on fd=%d",
+                         thread->thread_id, conn->fd);
+            cleanup_fragmentation_state(conn);
+            return ws_fail_connection(conn, WS_CLOSE_INVALID_UTF8);
+        }
+
         /* Deliver complete message to application */
         if (parser->fragment_opcode == WS_OPCODE_TEXT && server->callbacks.on_text_message) {
             /* Ensure null termination for text messages */
