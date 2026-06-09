@@ -21,6 +21,11 @@ if(PORTICO_ASAN)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=address,undefined)
 endif()
+option(PORTICO_TSAN           "Build with ThreadSanitizer" OFF)
+if(PORTICO_TSAN)
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g -O1)
+    add_link_options(-fsanitize=thread)
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -53,6 +58,8 @@ if(PORTICO_BUILD_EXAMPLES)
     target_link_libraries(http_server PRIVATE portico)
     add_executable(autobahn_server examples/autobahn_server.c)
     target_link_libraries(autobahn_server PRIVATE portico)
+    add_executable(stress_server examples/stress_server.c)
+    target_link_libraries(stress_server PRIVATE portico)
 endif()
 
 # --- tests ---

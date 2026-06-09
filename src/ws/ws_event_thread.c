@@ -442,10 +442,20 @@ void* ws_event_thread_worker(void *arg) {
                 while (read(thread->wakeup_eventfd, &dummy, sizeof(dummy)) > 0) {
                     /* Continue reading until EAGAIN */
                 }
-                /* Process MPSC queue messages */
-                int processed = ws_mpsc_process_messages(thread->message_queue, &processor, 50);
-                if (processed > 0) {
-                    WS_DEBUG_LOG("Thread %u: Processed %d MPSC messages on wakeup", thread->thread_id, processed);
+                /* Drain the ENTIRE MPSC queue. The wakeup eventfd is
+                 * edge-triggered and was just drained above, so any messages
+                 * left queued after a bounded batch would be stranded until the
+                 * next producer write — which may never come. That stranded
+                 * new-connection messages, leaving accepted sockets unregistered
+                 * and unprocessed (they pile up in CLOSE_WAIT and leak). Loop
+                 * until the queue is empty so nothing is left behind. */
+                int batch, total = 0;
+                do {
+                    batch = ws_mpsc_process_messages(thread->message_queue, &processor, 256);
+                    if (batch > 0) total += batch;
+                } while (batch > 0);
+                if (total > 0) {
+                    WS_DEBUG_LOG("Thread %u: Processed %d MPSC messages on wakeup", thread->thread_id, total);
                 }
             } else {
                 /* Connection event - handle I/O. A single wakeup can carry

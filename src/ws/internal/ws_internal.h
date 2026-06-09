@@ -117,8 +117,12 @@ typedef struct {
     /* Memory pool for nodes */
     ws_mpsc_node_t *node_pool;     /* Pre-allocated nodes */
     uint32_t node_pool_size;       /* Current size of node pool */
-    atomic_uintptr_t free_head;    /* Head of free node list (atomic) */
+    atomic_uintptr_t free_head;    /* Head of free node list */
     atomic_uint_fast32_t free_nodes; /* Free node count */
+    pthread_mutex_t free_lock;     /* Serializes free-list get/return/expand.
+                                    * The prior lock-free Treiber stack had an
+                                    * ABA race: a node could be popped while
+                                    * being returned, handing it to two owners. */
     
     /* Adaptive pool sizing */
     uint32_t initial_pool_size;    /* Starting pool size */

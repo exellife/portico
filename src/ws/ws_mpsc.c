@@ -211,8 +211,9 @@ ws_mpsc_queue_t* ws_mpsc_queue_create(uint32_t node_pool_size) {
     queue->growth_cooldown_sec = WS_MPSC_DEFAULT_GROWTH_COOLDOWN;
     atomic_store(&queue->expanding, false);
     atomic_store(&queue->total_expansions, 0);
+    pthread_mutex_init(&queue->free_lock, NULL);
 
-    WS_DEBUG_LOG("Created MPSC queue with %u node pool (adaptive: max=%u, growth=%ux)", 
+    WS_DEBUG_LOG("Created MPSC queue with %u node pool (adaptive: max=%u, growth=%ux)",
                  node_pool_size, queue->max_pool_size, queue->growth_factor);
     return queue;
 }
@@ -271,6 +272,7 @@ void ws_mpsc_queue_destroy(ws_mpsc_queue_t *queue) {
         free(queue->node_pool);
     }
 
+    pthread_mutex_destroy(&queue->free_lock);
     free(queue);
     WS_DEBUG_LOG("Destroyed MPSC queue");
 }
@@ -284,7 +286,14 @@ ws_mpsc_node_t* ws_mpsc_queue_get_node(ws_mpsc_queue_t *queue) {
         return NULL;
     }
 
-    /* Check if we should attempt adaptive expansion */
+    /* The free list has multiple producers (every thread that sends to this
+     * queue) and races return_node (the consumer); a single lock makes the
+     * expand + pop atomic and ABA-free. The critical section is a handful of
+     * pointer ops — far cheaper than the eventfd write + send() each message
+     * already costs. */
+    pthread_mutex_lock(&queue->free_lock);
+
+    /* Adaptive expansion (also touches free_head, so it belongs under the lock). */
     if (should_expand_pool(queue)) {
         uint32_t new_size = queue->node_pool_size * queue->growth_factor;
         if (new_size > queue->max_pool_size) {
@@ -293,36 +302,25 @@ ws_mpsc_node_t* ws_mpsc_queue_get_node(ws_mpsc_queue_t *queue) {
         expand_node_pool(queue, new_size);
     }
 
-    /* Try to pop a node from the free list */
-    uintptr_t free_head;
-    ws_mpsc_node_t *node;
-    uintptr_t next_free;
-
-    do {
-        free_head = atomic_load_explicit(&queue->free_head, memory_order_acquire);
-        if (free_head == 0) {
-            /* No free nodes available - record exhaustion event */
-            atomic_fetch_add(&queue->exhaustion_count, 1);
-            WS_DEBUG_LOG("Buffer pool exhausted");
-            return NULL;
-        }
-        
-        node = (ws_mpsc_node_t*)free_head;
-        next_free = atomic_load_explicit(&node->next, memory_order_acquire);
-        
-        /* Try to update free_head to point to next free node */
-    } while (!atomic_compare_exchange_weak_explicit(&queue->free_head, &free_head, next_free,
-                                                   memory_order_release, memory_order_acquire));
-
-    /* Decrement free node count */
+    uintptr_t free_head = atomic_load_explicit(&queue->free_head, memory_order_relaxed);
+    if (free_head == 0) {
+        atomic_fetch_add(&queue->exhaustion_count, 1);
+        pthread_mutex_unlock(&queue->free_lock);
+        WS_DEBUG_LOG("Buffer pool exhausted");
+        return NULL;
+    }
+    ws_mpsc_node_t *node = (ws_mpsc_node_t*)free_head;
+    uintptr_t next_free = atomic_load_explicit(&node->next, memory_order_relaxed);
+    atomic_store_explicit(&queue->free_head, next_free, memory_order_relaxed);
     atomic_fetch_sub_explicit(&queue->free_nodes, 1, memory_order_relaxed);
-    
-    /* Initialize the node for use */
+    pthread_mutex_unlock(&queue->free_lock);
+
+    /* Initialize the node for use (now solely owned by this caller). */
     node->data = NULL;
     node->data_size = 0;
     node->message_type = 0;
     atomic_store_explicit(&node->next, 0, memory_order_relaxed);
-    
+
     return node;
 }
 
@@ -339,16 +337,13 @@ void ws_mpsc_queue_return_node(ws_mpsc_queue_t *queue, ws_mpsc_node_t *node) {
     node->data_size = 0;
     node->message_type = 0;
 
-    /* Push node back onto the free list */
-    uintptr_t old_head;
-    do {
-        old_head = atomic_load_explicit(&queue->free_head, memory_order_acquire);
-        atomic_store_explicit(&node->next, old_head, memory_order_relaxed);
-    } while (!atomic_compare_exchange_weak_explicit(&queue->free_head, &old_head, (uintptr_t)node,
-                                                   memory_order_release, memory_order_acquire));
-    
-    /* Increment free node count */
+    /* Push node back onto the free list under the lock (see get_node). */
+    pthread_mutex_lock(&queue->free_lock);
+    uintptr_t old_head = atomic_load_explicit(&queue->free_head, memory_order_relaxed);
+    atomic_store_explicit(&node->next, old_head, memory_order_relaxed);
+    atomic_store_explicit(&queue->free_head, (uintptr_t)node, memory_order_relaxed);
     atomic_fetch_add_explicit(&queue->free_nodes, 1, memory_order_relaxed);
+    pthread_mutex_unlock(&queue->free_lock);
 }
 
 /* ============================================================================
@@ -385,31 +380,59 @@ ws_mpsc_node_t* ws_mpsc_queue_dequeue(ws_mpsc_queue_t *queue) {
         return NULL;
     }
 
-    /* Single consumer dequeue - much simpler than multi-consumer */
+    /* Single-consumer dequeue (Vyukov-style intrusive MPSC, no stub node).
+     *
+     * The hard case is the LAST node: enqueue is two steps — swap `tail` to the
+     * new node, then link `prev_tail->next`. Between those, an observer sees
+     * head->next == NULL while the queue is NOT actually empty. The previous
+     * implementation CAS'd head to NULL in that window; if a producer had just
+     * swapped tail, its node became unreachable and head stayed NULL FOREVER —
+     * every later message was silently lost (observed as accepted connections
+     * never registered, leaking in CLOSE_WAIT). We distinguish the two cases via
+     * `tail` and wait for the producer to publish its link instead of dropping
+     * it. */
     ws_mpsc_node_t *head = (ws_mpsc_node_t*)atomic_load_explicit(&queue->head, memory_order_acquire);
     if (head == NULL) {
         return NULL; /* Queue is empty */
     }
-    
-    /* Get the next node */
+
     ws_mpsc_node_t *next = (ws_mpsc_node_t*)atomic_load_explicit(&head->next, memory_order_acquire);
-    
-    if (next != NULL) {
-        /* Normal case: there's a next node */
-        atomic_store_explicit(&queue->head, (uintptr_t)next, memory_order_release);
-    } else {
-        /* This might be the last node or queue might be empty now */
-        ws_mpsc_node_t *expected_head = head;
-        if (atomic_compare_exchange_strong_explicit(&queue->head, (uintptr_t*)&expected_head, 
-                                                   (uintptr_t)NULL, memory_order_acq_rel, memory_order_acquire)) {
-            /* Successfully made queue empty, also need to reset tail if it was pointing to this node */
-            ws_mpsc_node_t *expected_tail = head;
-            atomic_compare_exchange_strong_explicit(&queue->tail, (uintptr_t*)&expected_tail, 
-                                                   (uintptr_t)NULL, memory_order_acq_rel, memory_order_acquire);
-        } else {
-            /* Head changed, another thread enqueued - retry */
-            return ws_mpsc_queue_dequeue(queue);
+
+    if (next == NULL) {
+        /* head->next not yet set: either head is genuinely the only node, or a
+         * producer has swapped tail past head but not yet linked head->next. */
+        ws_mpsc_node_t *tail = (ws_mpsc_node_t*)atomic_load_explicit(&queue->tail, memory_order_acquire);
+        if (head != tail) {
+            /* Producer mid-enqueue — its `head->next = node` store is imminent.
+             * Spin until it lands, then fall through to the advance path. */
+            while ((next = (ws_mpsc_node_t*)atomic_load_explicit(&head->next, memory_order_acquire)) == NULL) {
+                /* brief spin */
+            }
         }
+    }
+
+    if (next != NULL) {
+        /* There is a successor: advance head to it. */
+        atomic_store_explicit(&queue->head, (uintptr_t)next, memory_order_release);
+        atomic_fetch_add_explicit(&queue->messages_received, 1, memory_order_relaxed);
+        return head;
+    }
+
+    /* head == tail and head->next == NULL: head is truly the last node. Empty
+     * the queue, then reconcile with any producer that swaps tail in between —
+     * it will link head->next to its node, which we must republish rather than
+     * strand. */
+    atomic_store_explicit(&queue->head, (uintptr_t)NULL, memory_order_release);
+    ws_mpsc_node_t *expected_tail = head;
+    if (!atomic_compare_exchange_strong_explicit(&queue->tail, (uintptr_t*)&expected_tail,
+                                                 (uintptr_t)NULL,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+        /* A producer enqueued after we cleared head: wait for it to link
+         * head->next, then make that node the new head. */
+        while ((next = (ws_mpsc_node_t*)atomic_load_explicit(&head->next, memory_order_acquire)) == NULL) {
+            /* brief spin */
+        }
+        atomic_store_explicit(&queue->head, (uintptr_t)next, memory_order_release);
     }
 
     atomic_fetch_add_explicit(&queue->messages_received, 1, memory_order_relaxed);

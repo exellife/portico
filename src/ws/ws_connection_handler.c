@@ -572,30 +572,28 @@ void close_connection(ws_event_thread_t *thread, int fd) {
     if (!thread || fd < 0) {
         return;
     }
-
     /* O(1) connection lookup using FD map */
     ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
 
-    /* Idempotent: if the fd is no longer registered it was already closed (e.g.
-     * coalesced EPOLLIN+EPOLLOUT+EPOLLHUP on one wakeup). Closing again would
-     * double-close the fd — which can clobber a freshly-accepted connection that
-     * reused the number — and double-decrement the active count. */
+    /* Always release the fd at the OS layer: unregister from the FD map, drop it
+     * from epoll, and close it. EPOLL_CTL_DEL/close on an fd we no longer track
+     * just error harmlessly, so this is safe to reach with conn == NULL — and
+     * NOT closing the fd in that case leaks it (the socket lingers in CLOSE_WAIT
+     * and its epoll registration keeps firing). Double-close within a single
+     * wakeup is prevented by the event loop's per-fd `closed` guard; once the fd
+     * is EPOLL_CTL_DEL'd and closed here, no further events can reference it. */
+    ws_unregister_fd(thread, fd);
+    epoll_ctl(thread->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+    close(fd);
+
+    /* Without a connection struct there is nothing more to tear down. */
     if (!conn) {
         return;
     }
 
-    /* Unregister from FD map */
-    ws_unregister_fd(thread, fd);
-
-    /* Remove from epoll */
-    epoll_ctl(thread->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-    
-    /* Close socket */
-    close(fd);
-    
     /* Update connection count */
     atomic_fetch_sub(&thread->active_connections, 1);
-    
+
     WS_DEBUG_LOG("Thread %u: Closed connection fd=%d, remaining: %u/%u", 
                  thread->thread_id, fd, 
                  atomic_load(&thread->active_connections), thread->max_connections);
