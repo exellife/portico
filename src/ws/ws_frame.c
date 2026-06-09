@@ -150,9 +150,12 @@ static void ws_unmask_payload_sse2(uint8_t *payload, size_t len, const uint8_t m
         _mm_storeu_si128((__m128i*)(payload + i), data);
     }
     
-    /* Process remaining bytes in 32-bit chunks */
+    /* Process remaining bytes in 32-bit chunks (memcpy: payload may be unaligned) */
     for (size_t i = sse_len; i < (len & ~3UL); i += 4) {
-        *((uint32_t*)(payload + i)) ^= mask32;
+        uint32_t v;
+        memcpy(&v, payload + i, sizeof v);
+        v ^= mask32;
+        memcpy(payload + i, &v, sizeof v);
     }
     
     /* Handle final 1-3 bytes */

@@ -305,6 +305,12 @@ void ws_cleanup_event_thread(ws_event_thread_t *thread) {
         thread->thread = 0;
     }
 
+    /* Destroy the per-thread MPSC message queue (preallocated node pool). */
+    if (thread->message_queue) {
+        ws_mpsc_queue_destroy(thread->message_queue);
+        thread->message_queue = NULL;
+    }
+
     /* Close all connections */
     if (thread->connections) {
         for (uint32_t i = 0; i < thread->max_connections; i++) {

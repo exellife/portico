@@ -98,10 +98,10 @@ int ws_sha1(const uint8_t *data, size_t len, uint8_t *hash) {
         
         /* Break chunk into words */
         for (int i = 0; i < 16; i++) {
-            w[i] = (msg[chunk + i * 4] << 24) |
-                   (msg[chunk + i * 4 + 1] << 16) |
-                   (msg[chunk + i * 4 + 2] << 8) |
-                   (msg[chunk + i * 4 + 3]);
+            w[i] = ((uint32_t)msg[chunk + i * 4] << 24) |
+                   ((uint32_t)msg[chunk + i * 4 + 1] << 16) |
+                   ((uint32_t)msg[chunk + i * 4 + 2] << 8) |
+                   ((uint32_t)msg[chunk + i * 4 + 3]);
         }
         
         /* Extend words */

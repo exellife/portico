@@ -258,8 +258,10 @@ void ws_server_destroy_internal(ws_server_t *server) {
         internal->global_hash = NULL;
     }
 
-    /* Free thread-related resources */
+    /* Free thread-related resources (per-thread buffers/queues, then the array). */
     if (internal->threads) {
+        for (uint32_t i = 0; i < internal->thread_count; i++)
+            ws_cleanup_event_thread(&internal->threads[i]);
         free(internal->threads);
         internal->threads = NULL;
     }
