@@ -134,10 +134,14 @@ plus ASan/TSan builds surfaced real bugs:
 - **Node-pool ABA race (fixed).** Treiber-stack free list could hand one node to
   two owners under contention (TSan-confirmed). Now serialized with a small
   per-queue mutex.
-- **Known remaining (TSan, pre-existing):** send-to-reused-fd cross-talk (an
-  echo queued for a closed fd can hit a freshly-accepted one) and a
-  connection-slot init vs global-hash-remove race. Both need a generation/epoch
-  or ref-protected send; tracked as follow-ups.
+- **Send-to-reused-fd cross-talk (fixed, commit 87b9b41).** An echo queued for a
+  connection could be delivered to a different one that reused the fd. Sends now
+  carry a slot `{conn, generation}` and are dropped if the slot was recycled.
+- **Slot init vs global-hash traversal (fixed, commit 87b9b41).** The hash read
+  `conn->fd` off a recyclable slot during lookup, racing the unlocked re-init
+  memset. The hash now stores `{fd, conn}` and matches on the stored fd.
+
+The harness is now **fully TSan-clean** under concurrent HTTP + WS + fuzz load.
 
 How to reproduce the leak class:
 ```sh
