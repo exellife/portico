@@ -1,11 +1,8 @@
 #include "http_internal.h"
 
-#include <poll.h>
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 
 /* ---- response builders ----------------------------------------------------- */
 
@@ -65,27 +62,9 @@ const char *portico_http_reason(int status) {
     }
 }
 
-/* ---- robust writer --------------------------------------------------------- */
+/* ---- serialize ------------------------------------------------------------- */
 
-int portico_send_all(int fd, const void *buf, size_t len) {
-    const char *p = (const char *)buf;
-    size_t off = 0;
-    while (off < len) {
-        ssize_t n = send(fd, p + off, len - off, MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (n > 0) { off += (size_t)n; continue; }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-            if (poll(&pfd, 1, 5000) <= 0) return -1;   /* timeout/error */
-            continue;
-        }
-        return -1;   /* EPIPE / other */
-    }
-    return 0;
-}
-
-/* ---- serialize + send ------------------------------------------------------ */
-
-int portico_http_send_response(int fd, portico_response_t *res) {
+int portico_http_build_response(portico_response_t *res, uint8_t **out, size_t *out_len) {
     if (res->status == 0) res->status = 200;
 
     char head[PORTICO_RES_HEADERS_CAP + 256];
@@ -97,17 +76,27 @@ int portico_http_send_response(int fd, portico_response_t *res) {
                       res->keep_alive ? "keep-alive" : "close");
     if (hn <= 0 || (size_t)hn >= sizeof head) return -1;
 
-    if (portico_send_all(fd, head, (size_t)hn) != 0) return -1;
-    if (res->body_len && portico_send_all(fd, res->body, res->body_len) != 0) return -1;
+    size_t total = (size_t)hn + res->body_len;
+    uint8_t *buf = malloc(total ? total : 1);
+    if (!buf) return -1;
+    memcpy(buf, head, (size_t)hn);
+    if (res->body_len) memcpy(buf + hn, res->body, res->body_len);
+    *out = buf;
+    *out_len = total;
     return 0;
 }
 
-int portico_http_send_status(int fd, int status, int keep_alive) {
-    char buf[160];
-    int n = snprintf(buf, sizeof buf,
+int portico_http_build_status(int status, int keep_alive, uint8_t **out, size_t *out_len) {
+    char tmp[160];
+    int n = snprintf(tmp, sizeof tmp,
                      "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: %s\r\n\r\n",
                      status, portico_http_reason(status),
                      keep_alive ? "keep-alive" : "close");
-    if (n <= 0) return -1;
-    return portico_send_all(fd, buf, (size_t)n);
+    if (n <= 0 || (size_t)n >= sizeof tmp) return -1;
+    uint8_t *buf = malloc((size_t)n);
+    if (!buf) return -1;
+    memcpy(buf, tmp, (size_t)n);
+    *out = buf;
+    *out_len = (size_t)n;
+    return 0;
 }

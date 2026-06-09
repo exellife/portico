@@ -448,32 +448,33 @@ void* ws_event_thread_worker(void *arg) {
                     WS_DEBUG_LOG("Thread %u: Processed %d MPSC messages on wakeup", thread->thread_id, processed);
                 }
             } else {
-                /* Connection event - handle I/O */
+                /* Connection event - handle I/O. A single wakeup can carry
+                 * several flags for one fd (EPOLLIN|EPOLLOUT|EPOLLHUP); once we
+                 * close the connection, skip the rest so we don't operate on (or
+                 * re-close) a freed fd whose number may have been reused. */
+                int closed = 0;
+
                 if (ev->events & EPOLLIN) {
                     /* Data available for reading */
                     if (handle_connection_read(thread, fd) < 0) {
-                        /* Check if connection still exists before trying to close */
-                        ws_connection_t *conn_check = ws_find_connection_by_fd(thread, fd);
-                        if (conn_check) {
-                            WS_DEBUG_LOG("Thread %u: Connection fd=%d read failed, closing", thread->thread_id, fd);
-                            close_connection(thread, fd);
-                        } else {
-                            WS_DEBUG_LOG("Thread %u: Connection fd=%d read failed, but already cleaned up", thread->thread_id, fd);
-                        }
+                        WS_DEBUG_LOG("Thread %u: Connection fd=%d read failed, closing", thread->thread_id, fd);
+                        close_connection(thread, fd);
+                        closed = 1;
                     }
                 }
-                
-                if (ev->events & EPOLLOUT) {
-                    /* Socket ready for writing */
-                    handle_connection_write(thread, fd);
+
+                if (!closed && (ev->events & EPOLLOUT)) {
+                    /* Socket ready for writing — drains buffered output; closes
+                     * the connection itself (returns <0) on write error. */
+                    if (handle_connection_write(thread, fd) < 0) closed = 1;
                 }
-                
-                if (ev->events & (EPOLLHUP | EPOLLERR)) {
+
+                if (!closed && (ev->events & (EPOLLHUP | EPOLLERR))) {
                     /* Connection closed or error */
                     WS_DEBUG_LOG("Thread %u: Connection fd=%d closed/error", thread->thread_id, fd);
                     close_connection(thread, fd);
                 }
-                
+
                 atomic_fetch_add(&thread->events_processed, 1);
             }
         }

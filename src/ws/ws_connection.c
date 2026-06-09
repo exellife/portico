@@ -222,6 +222,13 @@ void ws_connection_init(ws_connection_t *conn, int fd, uint16_t thread_id, uint1
         conn->recv_buffer_capacity = 0;
     }
 
+    /* No pending HTTP output yet. */
+    conn->out_buffer = NULL;
+    conn->out_capacity = 0;
+    conn->out_used = 0;
+    conn->out_sent = 0;
+    conn->out_close_when_drained = 0;
+
     /* Initialize statistics if enabled */
     #ifdef WS_ENABLE_STATISTICS
     atomic_init(&conn->bytes_sent, 0);
@@ -242,6 +249,15 @@ void ws_connection_cleanup(ws_connection_t *conn) {
         conn->recv_buffer = NULL;
         conn->recv_buffer_capacity = 0;
         conn->recv_buffer_used = 0;
+    }
+
+    /* Cleanup pending HTTP output buffer */
+    if (conn->out_buffer) {
+        free(conn->out_buffer);
+        conn->out_buffer = NULL;
+        conn->out_capacity = 0;
+        conn->out_used = 0;
+        conn->out_sent = 0;
     }
 
     /* Note: Buffer cleanup and socket closing handled by caller */

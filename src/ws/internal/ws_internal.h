@@ -472,6 +472,11 @@ void close_connection(ws_event_thread_t *thread, int fd);
 int portico_initial_dispatch(ws_event_thread_t *thread, ws_connection_t *conn, ws_server_internal_t *server);
 int portico_http_event(ws_event_thread_t *thread, ws_connection_t *conn, ws_server_internal_t *server);
 
+/* EPOLLOUT handler for the HTTP path: drains conn->out_buffer (queued response
+ * bytes a slow peer hasn't read yet) without blocking the event thread. Returns
+ * 0 to keep the connection, -1 if it was closed (fatal write error). */
+int portico_http_on_writable(ws_event_thread_t *thread, ws_connection_t *conn);
+
 /* UTF-8 validation for text frames / close reasons (ws_utf8.c). */
 int ws_utf8_valid(const unsigned char *s, size_t len);
 

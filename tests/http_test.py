@@ -184,6 +184,35 @@ def main(host, port):
             r.check(f"Content-Length {label} -> 400", False, repr(e))
         c.close()
 
+    section("slow-reader head-of-line blocking")
+    # Saturate every event thread with clients that request a large response and
+    # then refuse to read it, stalling the socket write. A non-blocking server
+    # buffers the unsent bytes (EPOLLOUT) and keeps serving; a blocking one would
+    # freeze the thread. Fast requests on fresh connections must stay quick.
+    stalled = []
+    big = b"Z" * (2 * 1024 * 1024)
+    try:
+        for _ in range(8):
+            ss = socket.create_connection((host, port), timeout=5)
+            ss.sendall(b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(big) + big)
+            stalled.append(ss)   # never recv() — leave the response unread
+        time.sleep(0.5)
+        worst = 0.0
+        ok_all = True
+        for _ in range(8):
+            t0 = time.time()
+            fc = HTTP(host, port)
+            fc.send(req("GET", "/health")); s, h, b = fc.recv_response()
+            fc.close()
+            worst = max(worst, time.time() - t0)
+            ok_all = ok_all and s == 200 and b == b'{"status":"ok"}'
+        r.check("fast req unblocked by 8 slow readers", ok_all and worst < 2.0,
+                f"worst={worst*1000:.0f}ms")
+    finally:
+        for ss in stalled:
+            try: ss.close()
+            except OSError: pass
+
     section("HTTP/1.0 default close")
     c = HTTP(host, port)
     c.send(req("GET", "/health", version="1.0")); s, h, b = c.recv_response()

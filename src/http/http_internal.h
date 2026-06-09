@@ -4,6 +4,7 @@
 
 #include "portico_http.h"
 #include <stddef.h>
+#include <stdint.h>
 
 #define PORTICO_RES_HEADERS_CAP 4096
 #define PORTICO_MAX_BODY        (16 * 1024 * 1024)   /* request body hard cap */
@@ -31,14 +32,12 @@ int portico_http_parse(const char *buf, size_t len, portico_request_t *req);
 /* Reason phrase for a status code (e.g. 404 -> "Not Found"). */
 const char *portico_http_reason(int status);
 
-/* Robustly write `len` bytes to `fd` (handles partial sends / EAGAIN).
- * Returns 0 on success, -1 on error. */
-int portico_send_all(int fd, const void *buf, size_t len);
+/* Serialize `res` into a freshly malloc'd buffer (caller frees *out).
+ * Returns 0 on success (sets *out / *out_len), -1 on error. */
+int portico_http_build_response(portico_response_t *res, uint8_t **out, size_t *out_len);
 
-/* Serialize `res` and send it on `fd`. Returns 0 on success, -1 on error. */
-int portico_http_send_response(int fd, portico_response_t *res);
-
-/* Send a minimal status-only response (used for protocol-level errors). */
-int portico_http_send_status(int fd, int status, int keep_alive);
+/* Build a minimal status-only response (protocol errors) into a malloc'd
+ * buffer (caller frees *out). Returns 0 on success, -1 on error. */
+int portico_http_build_status(int status, int keep_alive, uint8_t **out, size_t *out_len);
 
 #endif /* PORTICO_HTTP_INTERNAL_H */

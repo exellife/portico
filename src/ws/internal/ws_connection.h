@@ -81,6 +81,14 @@ struct ws_connection {
     size_t write_buffer_size;      /* Total buffer size */
     size_t write_buffer_used;      /* Bytes currently in buffer */
     uint64_t syscall_count;        /* Number of actual send() calls */
+
+    /* HTTP outbound backpressure: bytes awaiting a writable socket, drained by
+     * the EPOLLOUT handler instead of blocking the event thread on a slow peer. */
+    uint8_t *out_buffer;           /* Pending unsent response bytes */
+    size_t out_capacity;           /* Allocated capacity of out_buffer */
+    size_t out_used;               /* Total bytes queued */
+    size_t out_sent;               /* Bytes already drained from the front */
+    uint8_t out_close_when_drained;/* Close the connection once out_buffer empties */
     
     /* User data pointer */
     void *user_data;               /* Application-specific data */

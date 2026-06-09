@@ -401,8 +401,9 @@ int process_fragmented_frame(ws_event_thread_t *thread, ws_connection_t *conn,
         }
         parser->fragment_buffer_size = initial_size;
         
-        /* Copy first fragment */
-        memcpy(parser->fragment_buffer, frame->payload, frame->payload_len);
+        /* Copy first fragment (payload may be NULL for a zero-length frame). */
+        if (frame->payload_len)
+            memcpy(parser->fragment_buffer, frame->payload, frame->payload_len);
         
         WS_DEBUG_LOG("Thread %u: Stored first fragment of %zu bytes on fd=%d", 
                      thread->thread_id, frame->payload_len, conn->fd);
@@ -431,7 +432,8 @@ int process_fragmented_frame(ws_event_thread_t *thread, ws_connection_t *conn,
                 WS_ERROR_LOG("Thread %u: Failed to allocate memory for text frame", thread->thread_id);
                 return -1;
             }
-            memcpy(text_data, frame->payload, frame->payload_len);
+            if (frame->payload_len)
+                memcpy(text_data, frame->payload, frame->payload_len);
             text_data[frame->payload_len] = '\0';
             
             /* Log first 50 chars of message for debugging */
@@ -480,9 +482,10 @@ int process_continuation_frame(ws_event_thread_t *thread, ws_connection_t *conn,
                      thread->thread_id, new_size, conn->fd);
     }
     
-    /* Append fragment data */
-    memcpy(parser->fragment_buffer + parser->fragment_total_size, 
-           frame->payload, frame->payload_len);
+    /* Append fragment data (payload may be NULL for a zero-length continuation). */
+    if (frame->payload_len)
+        memcpy(parser->fragment_buffer + parser->fragment_total_size,
+               frame->payload, frame->payload_len);
     parser->fragment_total_size += frame->payload_len;
     
     WS_DEBUG_LOG("Thread %u: Appended fragment of %zu bytes (total: %zu) on fd=%d", 
@@ -550,26 +553,18 @@ int handle_connection_write(ws_event_thread_t *thread, int fd) {
 
     /* O(1) connection lookup using FD map */
     ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
-    
+
     if (!conn) {
         WS_ERROR_LOG("Thread %u: Connection fd=%d not found for write", thread->thread_id, fd);
         return -1;
     }
 
-    /* Write buffer management - currently using direct send */
-    /* Future enhancement: Implement buffered writes for better performance */
-    /* For now, just acknowledge write readiness */
-    WS_DEBUG_LOG("Thread %u: Write ready on fd=%d (direct send mode)", thread->thread_id, fd);
-    
-    /* Modify epoll to remove EPOLLOUT unless needed */
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET;
-    ev.data.fd = fd;
-    if (epoll_ctl(thread->epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
-        WS_DEBUG_LOG("Thread %u: Failed to modify epoll for fd=%d: %s", 
-                     thread->thread_id, fd, strerror(errno));
+    /* EPOLLOUT is armed only by the HTTP backpressure path; drain pending bytes
+     * there. A -1 return means the write failed or a deferred close finished. */
+    if (portico_http_on_writable(thread, conn) < 0) {
+        close_connection(thread, fd);
+        return -1;
     }
-    
     return 0;
 }
 
@@ -580,6 +575,14 @@ void close_connection(ws_event_thread_t *thread, int fd) {
 
     /* O(1) connection lookup using FD map */
     ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
+
+    /* Idempotent: if the fd is no longer registered it was already closed (e.g.
+     * coalesced EPOLLIN+EPOLLOUT+EPOLLHUP on one wakeup). Closing again would
+     * double-close the fd — which can clobber a freshly-accepted connection that
+     * reused the number — and double-decrement the active count. */
+    if (!conn) {
+        return;
+    }
 
     /* Unregister from FD map */
     ws_unregister_fd(thread, fd);
