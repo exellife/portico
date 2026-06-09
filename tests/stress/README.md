@@ -206,8 +206,18 @@ Reading it honestly:
   socket won't take, drain on writability, bounded by a 4 MB cap. Verified — a
   2500-frame burst against a non-reading client lost **7 frames before, 0 after**;
   latency is unchanged (the MPSC batching is preserved, so no fast-path-style
-  regression); Autobahn 246/246, TSan/ASan clean. A slow-consumer disconnect at
-  the cap (vs the current drop-past-cap) remains a follow-up.
+  regression); Autobahn 246/246, TSan/ASan clean.
+
+  **Shipped — slow-consumer disconnect at the cap.** A consumer that backs up
+  past the 4 MB cap is now disconnected (so it reconnects + resyncs) rather than
+  silently dropping frames. The trigger is `shutdown(fd, SHUT_RDWR)` from the
+  send path — safe mid-MPSC-drain because it doesn't free the fd (no acceptor
+  reuse race); the socket then reports EOF and the connection tears down through
+  the normal event-loop close path with its slot still valid. The connection is
+  marked `CLOSING` on the first overflow so its remaining queued frames drop
+  silently (one log line, not thousands). Verified: over-cap consumer
+  disconnected + fd reclaimed; under-cap consumer still gets every frame; server
+  stays healthy; TSan/ASan clean.
 
 ### Soak
 

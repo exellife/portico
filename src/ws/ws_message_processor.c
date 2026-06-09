@@ -130,6 +130,11 @@ static int ws_buffered_data_send(ws_event_thread_t *thread, int fd, uint8_t opco
     ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
     if (!conn) return -1;   /* connection gone (closed/reused) — drop */
 
+    /* Already disconnecting (cap was hit on an earlier frame): drop the rest of
+     * this connection's backlog quietly instead of re-shutting-down + re-logging
+     * for every queued frame. */
+    if (conn->state != WS_STATE_OPEN) return 0;
+
     uint8_t *frame;
     size_t frame_len;
     if (ws_encode_frame(opcode, (const uint8_t *)data, len, &frame, &frame_len) != 0) {
@@ -137,6 +142,21 @@ static int ws_buffered_data_send(ws_event_thread_t *thread, int fd, uint8_t opco
     }
     int rc = portico_conn_send(thread, conn, frame, frame_len);
     free(frame);
+    if (rc < 0) {
+        /* Backpressure cap exceeded (or the socket errored): this consumer can't
+         * keep up. Disconnect it so it reconnects and resyncs rather than
+         * silently missing frames. shutdown() — not close() — is safe to call
+         * here mid-MPSC-drain: it doesn't free the fd, so there's no reuse race
+         * with the acceptor. It makes the socket report EOF/error, and the
+         * connection then tears down through the normal event-loop close path
+         * with its slot still valid (no double-close). */
+        WS_ERROR_LOG("Thread %u: disconnecting slow consumer fd=%d (send buffer cap exceeded)",
+                     thread->thread_id, fd);
+        /* Mark closing so the rest of this connection's queued frames drop
+         * quietly (here and at the MPSC dispatch's state==OPEN check). */
+        ws_connection_set_state(conn, WS_STATE_CLOSING);
+        shutdown(fd, SHUT_RDWR);
+    }
     return rc;
 }
 
