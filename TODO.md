@@ -90,10 +90,12 @@ confidence per hour cheaper than any feature here.
 
 What you need to actually run it behind nginx and operate it at scale.
 
-- [ ] **Real client IP behind a proxy.** Behind nginx portico sees 127.0.0.1.
-      Add `X-Forwarded-For`/`X-Real-IP` parsing and/or PROXY-protocol support so
-      audit, rate-limiting, and geo work. (Introduced by the "deploy behind nginx"
-      decision.)
+- [x] **Real client IP (proxy-aware).** `portico_req_client_ip(req)` (HTTP) +
+      `portico_client_ip(server, fd, …)` (WS peer). `ws_config_t.trust_proxy` (off by
+      default → a spoofed `X-Forwarded-For` is ignored); when on, prefers `X-Real-IP`
+      then the leftmost `X-Forwarded-For`, else the direct peer. Spoof-safety covered in
+      `http_test.py`. *Remaining:* PROXY-protocol support; proxy-aware IP for WS
+      (capture XFF at the handshake, not just the peer).
 - [ ] **Observability.** Expose per-connection + per-thread metrics: latency
       histograms, send-buffer depth, slow-consumer/disconnect counters, dropped
       frames, active connections, accept rate. Structured logging with levels.

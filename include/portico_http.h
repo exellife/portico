@@ -27,6 +27,11 @@ typedef struct {
     size_t            num_headers;
     const char       *body;    size_t body_len;
     int               keep_alive;
+    /* Resolved client IP (numeric, NUL-terminated). Unlike the pointers above,
+     * this is an owned buffer, valid for the handler call. Proxy-aware: the
+     * X-Real-IP / leftmost X-Forwarded-For when trust_proxy is set and present,
+     * otherwise the direct peer. 46 == INET6_ADDRSTRLEN. */
+    char              client_ip[46];
 } portico_request_t;
 
 typedef struct portico_response portico_response_t;
@@ -46,6 +51,11 @@ int portico_req_path_is(const portico_request_t *req, const char *p);
  * its length via len_out, or NULL if absent. */
 const char *portico_req_header(const portico_request_t *req, const char *name,
                                size_t *len_out);
+
+/* The resolved client IP (numeric, NUL-terminated). Proxy-aware when the server
+ * was configured with trust_proxy (X-Real-IP / leftmost X-Forwarded-For), else
+ * the direct peer address. Use for rate limiting, blacklists, and audit logs. */
+const char *portico_req_client_ip(const portico_request_t *req);
 
 /* ---- response builders (call from within the handler) ---- */
 

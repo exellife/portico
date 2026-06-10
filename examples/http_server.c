@@ -23,6 +23,10 @@ static int on_binary(int fd, const void *data, size_t len, void *u) {
 /* --- HTTP routing --- */
 static int on_http(const portico_request_t *req, portico_response_t *res, void *u) {
     (void)u;
+    if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/ip")) {
+        portico_res_text(res, 200, portico_req_client_ip(req));   /* resolved client IP */
+        return 0;
+    }
     if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/")) {
         portico_res_text(res, 200, "portico http+ws server\n");
         return 0;
@@ -74,6 +78,7 @@ int main(void) {
     /* Optional TLS: set TLS_CERT + TLS_KEY (PEM paths) to serve HTTPS/WSS. */
     cfg.tls_cert_file = getenv("TLS_CERT");
     cfg.tls_key_file  = getenv("TLS_KEY");
+    cfg.trust_proxy   = getenv("TRUST_PROXY") != NULL;   /* honor X-Forwarded-For/X-Real-IP */
 
     g_server = ws_server_create(&cfg);
     if (!g_server) { fprintf(stderr, "create failed\n"); return 1; }

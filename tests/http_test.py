@@ -86,6 +86,16 @@ def main(host, port):
             and h.get("content-type", "").startswith("application/json"))
     c.send(req("GET", "/missing")); s, h, b = c.recv_response()
     r.check("GET /missing -> 404", s == 404)
+
+    section("client IP (proxy not trusted by default)")
+    c = HTTP(host, port)
+    c.send(req("GET", "/ip")); s, h, b = c.recv_response()
+    r.check("client IP is the peer", s == 200 and b.strip() == b"127.0.0.1", b)
+    # default trust_proxy=off: a spoofed X-Forwarded-For MUST be ignored
+    c = HTTP(host, port)
+    c.send(req("GET", "/ip", extra="X-Forwarded-For: 6.6.6.6\r\n"))
+    s, h, b = c.recv_response()
+    r.check("spoofed XFF ignored", s == 200 and b.strip() == b"127.0.0.1", b)
     c.send(req("DELETE", "/echo")); s, h, b = c.recv_response()
     r.check("DELETE /echo -> 405", s == 405 and "allow" in h)
     c.close()

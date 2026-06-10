@@ -182,6 +182,32 @@ int portico_conn_on_writable(ws_event_thread_t *thread, ws_connection_t *conn) {
     return conn->out_close_when_drained ? -1 : 0;     /* finish deferred close */
 }
 
+/* Fill req->client_ip: the proxy-supplied client (X-Real-IP, then the leftmost
+ * X-Forwarded-For) when trust_proxy is set and present, else the direct peer. */
+static void resolve_client_ip(const ws_connection_t *conn, const ws_server_internal_t *server,
+                              portico_request_t *req) {
+    if (server->config.trust_proxy) {
+        size_t vlen = 0;
+        const char *xr = portico_req_header(req, "X-Real-IP", &vlen);
+        if (xr && vlen) {
+            size_t n = vlen < sizeof req->client_ip - 1 ? vlen : sizeof req->client_ip - 1;
+            memcpy(req->client_ip, xr, n); req->client_ip[n] = '\0';
+            return;
+        }
+        const char *xff = portico_req_header(req, "X-Forwarded-For", &vlen);
+        if (xff && vlen) {
+            size_t i = 0;
+            while (i < vlen && (xff[i] == ' ' || xff[i] == '\t')) i++;     /* trim left */
+            size_t j = i;
+            while (j < vlen && xff[j] != ',' && xff[j] != ' ' && xff[j] != '\t') j++;
+            size_t n = j - i;
+            if (n > sizeof req->client_ip - 1) n = sizeof req->client_ip - 1;
+            if (n) { memcpy(req->client_ip, xff + i, n); req->client_ip[n] = '\0'; return; }
+        }
+    }
+    ws_conn_peer_ip(conn, req->client_ip, sizeof req->client_ip);
+}
+
 /* Process all complete HTTP requests currently buffered. Returns 0 to keep the
  * connection open (awaiting more / draining output), or -1 to close it. */
 static int process_http_buffer(ws_event_thread_t *thread, ws_connection_t *conn,
@@ -205,6 +231,8 @@ static int process_http_buffer(ws_event_thread_t *thread, ws_connection_t *conn,
         if (total == -1) return http_error_close(thread, conn, 400);
         if (total == -2) return http_error_close(thread, conn, 413);
         if (total == -3) return http_error_close(thread, conn, 501);
+
+        resolve_client_ip(conn, server, &req);   /* before dispatch */
 
         /* Dispatch to the application handler. */
         portico_response_t res;

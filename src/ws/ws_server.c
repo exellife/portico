@@ -662,6 +662,16 @@ ws_state_t ws_get_connection_state_internal(ws_server_t *server, int fd) {
     return (ws_state_t)(conn->state);
 }
 
+int portico_client_ip(ws_server_t *server, int fd, char *out, size_t out_len) {
+    if (!server || fd < 0 || !out || out_len == 0) return -1;
+    ws_server_internal_t *internal = (ws_server_internal_t*)server;
+    ws_connection_t *conn = ws_connection_hash_find_and_ref(internal->global_hash, fd);
+    if (!conn) { out[0] = '\0'; return -1; }
+    ws_conn_peer_ip(conn, out, out_len);
+    ws_connection_unref(conn);
+    return 0;
+}
+
 int ws_set_connection_user_data_internal(ws_server_t *server, int fd, void *user_data) {
     if (!server || fd < 0) return WS_ERROR_INVALID_ARGS;
 

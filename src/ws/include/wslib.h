@@ -108,6 +108,12 @@ typedef struct {
      * fails rather than silently downgrading to plaintext. PEM files on disk. */
     const char *tls_cert_file;        /* PEM certificate chain (leaf first) */
     const char *tls_key_file;         /* PEM private key */
+
+    /* Trust proxy headers for the client IP. Set ONLY when behind a reverse
+     * proxy you control that overwrites X-Real-IP / X-Forwarded-For — otherwise
+     * a direct client can spoof its IP. When set, portico_req_client_ip() prefers
+     * X-Real-IP, then the leftmost X-Forwarded-For; else the direct peer. */
+    bool trust_proxy;
 } ws_config_t;
 
 /* ============================================================================
@@ -294,6 +300,14 @@ int ws_close_connection(ws_server_t *server, int fd, ws_close_code_t code, const
  * @return Connection state
  */
 ws_state_t ws_get_connection_state(ws_server_t *server, int fd);
+
+/**
+ * Write a connection's direct peer IP (numeric, NUL-terminated) into `out`.
+ * This is the socket-level address, NOT proxy-aware — for WS connections behind
+ * a proxy use the handshake's X-Forwarded-For. `out` should be >= 46 bytes.
+ * Returns 0 on success, -1 if the connection is unknown.
+ */
+int portico_client_ip(ws_server_t *server, int fd, char *out, size_t out_len);
 
 /**
  * Set user data for a connection.

@@ -31,6 +31,10 @@ const char *portico_req_header(const portico_request_t *req, const char *name,
     return NULL;
 }
 
+const char *portico_req_client_ip(const portico_request_t *req) {
+    return req->client_ip;
+}
+
 /* ---- parsing --------------------------------------------------------------- */
 
 /* Resolve the request's body framing in a smuggling-resistant way (RFC 7230
