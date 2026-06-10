@@ -177,7 +177,8 @@ typedef struct {
     atomic_uint_fast64_t events_processed;
     atomic_uint_fast64_t messages_processed;
     uint64_t last_activity_time;   /* For detecting stuck threads */
-    
+    time_t   last_reap;            /* Last slowloris-reaper sweep (rate-limit to ~1Hz) */
+
     /* Thread state */
     volatile bool running;         /* Thread should continue running */
     volatile bool paused;          /* Thread is paused (for graceful shutdown) */

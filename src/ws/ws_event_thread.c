@@ -371,6 +371,30 @@ void ws_cleanup_event_thread(ws_event_thread_t *thread) {
  * Event Thread Worker Function
  * ============================================================================ */
 
+extern void close_connection(ws_event_thread_t *thread, int fd);
+
+/* Slowloris defense: close connections still in a pre-request state (TLS handshake
+ * or the initial header read) past the handshake timeout. A connection leaves these
+ * states the moment it completes its first request/handshake, so this never touches
+ * an established WebSocket or an idle HTTP keep-alive — only stalled/incomplete ones.
+ * Measured from accept (conn->connect_time), so dribbling bytes can't reset it. */
+static void reap_stale_connections(ws_event_thread_t *thread) {
+    ws_server_internal_t *server = (ws_server_internal_t *)thread->server_instance;
+    if (!server) return;
+    uint32_t timeout = server->config.handshake_timeout ? server->config.handshake_timeout : 10;
+    time_t now = time(NULL);
+    for (uint32_t i = 0; i < thread->max_connections; i++) {
+        ws_connection_t *conn = &thread->connections[i];
+        if ((int)conn->fd < 0) continue;
+        if (conn->state != WS_STATE_CONNECTING && conn->state != WS_STATE_TLS_HANDSHAKE) continue;
+        if (now - (time_t)conn->connect_time >= (time_t)timeout) {
+            WS_DEBUG_LOG("Thread %u: reaping stalled connection fd=%u (state=%u, age=%lds)",
+                         thread->thread_id, conn->fd, conn->state, (long)(now - (time_t)conn->connect_time));
+            close_connection(thread, (int)conn->fd);
+        }
+    }
+}
+
 void* ws_event_thread_worker(void *arg) {
     ws_event_thread_t *thread = (ws_event_thread_t*)arg;
     if (!thread) {
@@ -408,12 +432,13 @@ void* ws_event_thread_worker(void *arg) {
 
     thread->running = true;
     thread->last_activity_time = time(NULL);
+    thread->last_reap = time(NULL);
 
     /* Main event loop */
     while (thread->running && !thread->paused) {
         /* Wait for events */
         int nfds = epoll_wait(thread->epoll_fd, thread->events, thread->max_events, 100); /* 100ms timeout */
-        
+
         if (nfds < 0) {
             if (errno == EINTR) {
                 continue; /* Interrupted by signal, retry */
@@ -421,6 +446,10 @@ void* ws_event_thread_worker(void *arg) {
             WS_ERROR_LOG("epoll_wait failed for thread %u: %s", thread->thread_id, strerror(errno));
             break;
         }
+
+        /* Slowloris reaper — at most once per second (epoll wakes every <= 100ms). */
+        time_t reap_now = time(NULL);
+        if (reap_now != thread->last_reap) { reap_stale_connections(thread); thread->last_reap = reap_now; }
 
         if (nfds == 0) {
             /* Timeout - process pending messages and continue */
