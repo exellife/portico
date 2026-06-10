@@ -137,6 +137,38 @@ def test_over_limit(host, port, R):
         R.crit_("server alive after over-limit", f"{e!r}")
 
 
+def test_length_overflow(host, port, R):
+    section("declared-length overflow (C-1)")
+    # Masked binary frame with a 64-bit declared length but only a 14-byte header
+    # on the wire (2 + 8 length + 4 mask), no payload. The server must reject it
+    # WITHOUT evaluating header_len + payload_len — that sum integer-overflows
+    # size_t for 0xFFFF..FF (wraps below the bytes present), defeating the
+    # completeness check and driving an unbounded out-of-bounds unmask write.
+    cases = {
+        "len=2^64-1 (wraps size_t)": b"\xff" * 8,
+        "len=5MB (>max_message)":    struct.pack("!Q", 5_000_000),
+    }
+    for name, lenbytes in cases.items():
+        try:
+            ws = WS(host, port)
+            ws.sock.sendall(bytes([0x80 | WS_BIN, 0x80 | 127]) + lenbytes + os.urandom(4))
+            try:
+                f = ws.recv_frame(timeout=4)
+                R.check(f"{name} rejected", f["opcode"] == WS_CLOSE,
+                        f"opcode={f['opcode']}", critical=False)
+            except (ConnectionError, socket.timeout):
+                R.ok_(f"{name} rejected", "connection dropped")
+            ws.close()
+        except Exception as e:
+            R.ok_(f"{name} rejected", f"{e!r}")  # refused/reset on send is also rejection
+    # The crux: the worker must not have crashed handling the overflow frame.
+    try:
+        ws = WS(host, port); ok = ws.echo(b"alive?")["payload"] == b"alive?"; ws.close()
+        R.check("server alive after overflow frame", ok)
+    except Exception as e:
+        R.crit_("server alive after overflow frame", f"{e!r}")
+
+
 def test_fragmentation(host, port, R):
     section("fragmentation")
     msg = b"fragmented-" + os.urandom(120)
@@ -252,8 +284,8 @@ def main():
     u = urlparse(url); host, port = u.hostname or "127.0.0.1", u.port or 8080
     R = Results()
     print(f"== portico WS harness -> {host}:{port} ==")
-    for t in (test_sizes, test_over_limit, test_fragmentation, test_control,
-              test_framing_rules, test_transport, test_concurrency):
+    for t in (test_sizes, test_over_limit, test_length_overflow, test_fragmentation,
+              test_control, test_framing_rules, test_transport, test_concurrency):
         try: t(host, port, R)
         except Exception as e: R.crit_(t.__name__, f"harness error: {e!r}")
     print(f"\n== summary: {R.ok} ok, {R.warn} warn, {R.crit} critical ==")

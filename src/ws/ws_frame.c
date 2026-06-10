@@ -31,7 +31,8 @@
  * Frame Parsing Functions  
  * ============================================================================ */
 
-static int ws_parse_frame_header(const uint8_t *data, size_t len, ws_frame_t *frame) {
+static int ws_parse_frame_header(const uint8_t *data, size_t len, ws_frame_t *frame,
+                                 uint64_t max_payload_len) {
     if (len < 2) {
         return 0; /* pgforge: need more data (not an error) — at least 2 header bytes */
     }
@@ -85,7 +86,21 @@ static int ws_parse_frame_header(const uint8_t *data, size_t len, ws_frame_t *fr
                            ((uint64_t)data[9]);
         frame->header_len += 8;
     }
-    
+
+    /* pgforge SECURITY (C-1 / M-9): reject an out-of-range declared length BEFORE
+     * it feeds any size arithmetic. The 64-bit extended length is fully attacker-
+     * controlled; without this bound `header_len + frame->payload_len` in
+     * ws_parse_frame integer-overflows size_t (e.g. 0xFFFF..FF wraps the sum below
+     * data_len), defeating the completeness check and driving an unbounded
+     * out-of-bounds in-place unmask write (unauthenticated remote heap corruption).
+     * Any frame larger than we will ever buffer is a protocol/abuse error. */
+    if (frame->payload_len > max_payload_len) {
+        WS_ERROR_LOG("Protocol error: frame payload_len %llu exceeds limit %llu",
+                     (unsigned long long)frame->payload_len,
+                     (unsigned long long)max_payload_len);
+        return -1;
+    }
+
     /* Parse masking key if present */
     if (frame->masked) {
         if (len < frame->header_len + 4) {
@@ -204,16 +219,17 @@ static void ws_unmask_payload(uint8_t *payload, size_t len, const uint8_t mask_k
     ws_unmask_payload_scalar(payload, len, mask_key);
 }
 
-int ws_parse_frame(const uint8_t *data, size_t data_len, ws_frame_t *frame) {
+int ws_parse_frame(const uint8_t *data, size_t data_len, ws_frame_t *frame,
+                   uint64_t max_payload_len) {
     if (!data || !frame || data_len == 0) {
         return -1;
     }
-    
+
     /* Initialize frame */
     memset(frame, 0, sizeof(ws_frame_t));
-    
-    /* Parse header */
-    int header_len = ws_parse_frame_header(data, data_len, frame);
+
+    /* Parse header (bounds the declared payload length — see ws_parse_frame_header) */
+    int header_len = ws_parse_frame_header(data, data_len, frame, max_payload_len);
     if (header_len == 0) {
         return 0;  /* pgforge: incomplete header — need more data, not an error */
     }

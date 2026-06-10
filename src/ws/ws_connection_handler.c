@@ -211,7 +211,8 @@ int handle_websocket_frames(ws_event_thread_t *thread, ws_connection_t *conn, ws
             memset(&frame, 0, sizeof(frame));
 
             int parse_result = ws_parse_frame(conn->recv_buffer + offset,
-                                              conn->recv_buffer_used - offset, &frame);
+                                              conn->recv_buffer_used - offset, &frame,
+                                              server->config.max_message_size);
 
             if (parse_result < 0) {
                 WS_ERROR_LOG("Thread %u: Failed to parse WebSocket frame on fd=%d",

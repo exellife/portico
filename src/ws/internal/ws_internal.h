@@ -505,7 +505,10 @@ int ws_send_handshake_error(ws_connection_t *conn, int error_code, const char *e
 int ws_process_handshake(ws_connection_t *conn, const char *request, const ws_callbacks_t *callbacks);
 
 /* Frame functions */
-int ws_parse_frame(const uint8_t *data, size_t data_len, ws_frame_t *frame);
+/* max_payload_len bounds the attacker-controlled declared frame length before any
+ * size arithmetic (overflow guard); pass the server's max_message_size. */
+int ws_parse_frame(const uint8_t *data, size_t data_len, ws_frame_t *frame,
+                   uint64_t max_payload_len);
 int ws_encode_frame(uint8_t opcode, const uint8_t *payload, size_t payload_len, 
                    uint8_t **frame_data, size_t *frame_len);
 int ws_send_text_frame(ws_connection_t *conn, const char *text, size_t len);
