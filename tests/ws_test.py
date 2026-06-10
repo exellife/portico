@@ -169,6 +169,44 @@ def test_length_overflow(host, port, R):
         R.crit_("server alive after overflow frame", f"{e!r}")
 
 
+def test_fragment_bomb(host, port, R):
+    section("unbounded fragment reassembly (H-6)")
+    # Start a fragmented message, then stream continuation frames whose cumulative
+    # size exceeds max_message_size. The server must cap reassembly (close 1009 or
+    # drop) — not grow fragment_buffer without bound. Each individual frame is
+    # within the per-frame cap, so only the *cumulative* guard can stop this.
+    rejected = False
+    try:
+        ws = WS(host, port)
+        chunk = os.urandom(100_000)
+        ws.send_frame(WS_BIN, chunk, fin=False)                # first fragment
+        for _ in range(15):                                    # ~1.6MB total streamed
+            try:
+                ws.send_frame(WS_CONT, chunk, fin=False)
+            except OSError:
+                rejected = True; break                         # server closed mid-stream
+        if not rejected:
+            # >1.5MB streamed and not yet final: a capped server has closed (1009);
+            # an uncapped server is silently buffering, so a timeout means NO cap.
+            try:
+                f = ws.recv_frame(timeout=3)
+                rejected = (f["opcode"] == WS_CLOSE)
+            except ConnectionError:
+                rejected = True                                # dropped == rejected
+            except socket.timeout:
+                rejected = False                               # still buffering == bug
+        ws.close()
+        R.check("oversized reassembly rejected", rejected,
+                "" if rejected else "no close after >1.5MB of fragments")
+    except Exception as e:
+        R.ok_("oversized reassembly rejected", f"{e!r}")        # reset == rejection
+    try:
+        ws = WS(host, port); ok = ws.echo(b"alive?")["payload"] == b"alive?"; ws.close()
+        R.check("server alive after fragment bomb", ok)
+    except Exception as e:
+        R.crit_("server alive after fragment bomb", f"{e!r}")
+
+
 def test_fragmentation(host, port, R):
     section("fragmentation")
     msg = b"fragmented-" + os.urandom(120)
@@ -284,8 +322,9 @@ def main():
     u = urlparse(url); host, port = u.hostname or "127.0.0.1", u.port or 8080
     R = Results()
     print(f"== portico WS harness -> {host}:{port} ==")
-    for t in (test_sizes, test_over_limit, test_length_overflow, test_fragmentation,
-              test_control, test_framing_rules, test_transport, test_concurrency):
+    for t in (test_sizes, test_over_limit, test_length_overflow, test_fragment_bomb,
+              test_fragmentation, test_control, test_framing_rules, test_transport,
+              test_concurrency):
         try: t(host, port, R)
         except Exception as e: R.crit_(t.__name__, f"harness error: {e!r}")
     print(f"\n== summary: {R.ok} ok, {R.warn} warn, {R.crit} critical ==")

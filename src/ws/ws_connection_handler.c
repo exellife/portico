@@ -501,11 +501,27 @@ int process_continuation_frame(ws_event_thread_t *thread, ws_connection_t *conn,
     ws_frame_parser_t *parser = &conn->frame_parser;
     
     if (!parser->in_fragmented_message) {
-        WS_ERROR_LOG("Thread %u: Received continuation frame without fragmented message on fd=%d", 
+        WS_ERROR_LOG("Thread %u: Received continuation frame without fragmented message on fd=%d",
                      thread->thread_id, conn->fd);
         return -1; /* Protocol error */
     }
-    
+
+    /* pgforge SECURITY (H-6): bound the *cumulative* reassembled size. Each
+     * single frame is already capped at max_message_size by ws_parse_frame, but
+     * without this check an attacker can stream unbounded FIN=0 continuation
+     * frames and grow fragment_buffer (1->2->4 MB ...) until the worker thread
+     * OOMs — a memory-exhaustion DoS that takes down every connection on the
+     * thread. Reject once the message would exceed max_message_size, per
+     * RFC 6455 §7.4.1 (close code 1009). Overflow-safe: fragment_total_size is
+     * an invariant <= max_message_size, so the subtraction never underflows. */
+    size_t max_msg = server->config.max_message_size;
+    if (frame->payload_len > max_msg - parser->fragment_total_size) {
+        WS_ERROR_LOG("Thread %u: reassembled message exceeds max_message_size (%zu) on fd=%d",
+                     thread->thread_id, max_msg, conn->fd);
+        cleanup_fragmentation_state(conn);
+        return ws_fail_connection(conn, WS_CLOSE_MESSAGE_TOO_BIG);
+    }
+
     /* Check if buffer needs expansion */
     size_t needed_size = parser->fragment_total_size + frame->payload_len;
     if (needed_size > parser->fragment_buffer_size) {
