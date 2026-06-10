@@ -71,6 +71,10 @@ int main(void) {
     cfg.enable_nodelay = true;
     cfg.backlog = 512;
 
+    /* Optional TLS: set TLS_CERT + TLS_KEY (PEM paths) to serve HTTPS/WSS. */
+    cfg.tls_cert_file = getenv("TLS_CERT");
+    cfg.tls_key_file  = getenv("TLS_KEY");
+
     g_server = ws_server_create(&cfg);
     if (!g_server) { fprintf(stderr, "create failed\n"); return 1; }
 

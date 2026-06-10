@@ -8,6 +8,7 @@
 #include "internal/ws_internal.h"
 #include "internal/ws_connection.h"
 #include "internal/ws_utils.h"
+#include "internal/ws_tls.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -29,6 +30,38 @@ extern void ws_register_fd(ws_event_thread_t *thread, int fd, ws_connection_t *c
 /* ============================================================================
  * Connection I/O Handling
  * ============================================================================ */
+
+/* Arm (want_out=1) or disarm EPOLLOUT for fd, keeping edge-triggered EPOLLIN —
+ * mirrors the HTTP backpressure path. Used to wait for writability when a TLS
+ * handshake step returns WANT_WRITE. */
+static void tls_set_epollout(ws_event_thread_t *thread, int fd, int want_out) {
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET | (want_out ? (uint32_t)EPOLLOUT : 0u);
+    ev.data.fd = fd;
+    epoll_ctl(thread->epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+}
+
+/* Drive the TLS accept handshake one step. Called from both the EPOLLIN and the
+ * EPOLLOUT paths (a step can need either). On completion the connection drops to
+ * WS_STATE_CONNECTING so the normal HTTP/WS dispatch takes over (its reads/writes
+ * become SSL-aware in stage 3). Returns 0 to keep the connection, -1 to close. */
+static int handle_tls_handshake(ws_event_thread_t *thread, ws_connection_t *conn) {
+    switch (ws_tls_do_handshake(conn->ssl)) {
+        case WS_TLS_DONE:
+            tls_set_epollout(thread, conn->fd, 0);      /* ensure EPOLLOUT disarmed */
+            ws_connection_set_state(conn, WS_STATE_CONNECTING);
+            return 0;
+        case WS_TLS_WANT_READ:
+            tls_set_epollout(thread, conn->fd, 0);
+            return 0;                                    /* wait for next EPOLLIN (ET) */
+        case WS_TLS_WANT_WRITE:
+            tls_set_epollout(thread, conn->fd, 1);       /* wait for writability */
+            return 0;
+        default:
+            WS_DEBUG_LOG("Thread %u: TLS handshake failed on fd=%d", thread->thread_id, conn->fd);
+            return -1;
+    }
+}
 
 int handle_connection_read(ws_event_thread_t *thread, int fd) {
     if (!thread || fd < 0) {
@@ -53,8 +86,11 @@ int handle_connection_read(ws_event_thread_t *thread, int fd) {
 
     /* Handle based on connection state */
     WS_DEBUG_LOG("Thread %u: Connection fd=%d state=%d", thread->thread_id, fd, conn->state);
-    
-    if (conn->state == WS_STATE_CONNECTING) {
+
+    if (conn->state == WS_STATE_TLS_HANDSHAKE) {
+        /* Encrypted: complete the TLS handshake before any HTTP/WS dispatch. */
+        return handle_tls_handshake(thread, conn);
+    } else if (conn->state == WS_STATE_CONNECTING) {
         /* First read: decide WebSocket handshake vs. plain HTTP (portico). */
         WS_DEBUG_LOG("Thread %u: Initial dispatch for fd=%d", thread->thread_id, fd);
         return portico_initial_dispatch(thread, conn, server);
@@ -557,6 +593,16 @@ int handle_connection_write(ws_event_thread_t *thread, int fd) {
     if (!conn) {
         WS_ERROR_LOG("Thread %u: Connection fd=%d not found for write", thread->thread_id, fd);
         return -1;
+    }
+
+    /* A writable event during the TLS handshake means a WANT_WRITE step can now
+     * proceed — drive it instead of the HTTP drain. */
+    if (conn->state == WS_STATE_TLS_HANDSHAKE) {
+        if (handle_tls_handshake(thread, conn) < 0) {
+            close_connection(thread, fd);
+            return -1;
+        }
+        return 0;
     }
 
     /* EPOLLOUT is armed only by the HTTP backpressure path; drain pending bytes

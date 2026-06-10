@@ -98,7 +98,11 @@ struct ws_connection {
     
     /* User data pointer */
     void *user_data;               /* Application-specific data */
-    
+
+    /* TLS (NULL = plaintext). Per-connection SSL object, created on accept when
+     * the listener has a TLS context; freed in ws_connection_cleanup. */
+    void *ssl;
+
     /* Statistics (optional, can be disabled) */
     #ifdef WS_ENABLE_STATISTICS
     atomic_uint_fast64_t bytes_sent;     /* Atomic counters for thread safety */

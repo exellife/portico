@@ -30,7 +30,8 @@ typedef enum {
     WS_STATE_OPEN = 1,          /* Connection established and ready */
     WS_STATE_CLOSING = 2,       /* Close frame sent, waiting for response */
     WS_STATE_CLOSED = 3,        /* Connection closed */
-    WS_STATE_HTTP = 4           /* portico: plain-HTTP connection (not a WS upgrade) */
+    WS_STATE_HTTP = 4,          /* portico: plain-HTTP connection (not a WS upgrade) */
+    WS_STATE_TLS_HANDSHAKE = 5  /* portico: TLS handshake in progress (before CONNECTING) */
 } ws_state_t;
 
 /* ============================================================================

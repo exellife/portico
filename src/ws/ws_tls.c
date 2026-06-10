@@ -49,6 +49,32 @@ void ws_tls_ctx_free(void *ctx) {
     if (ctx) SSL_CTX_free((SSL_CTX *)ctx);
 }
 
+void *ws_tls_conn_new(void *ctx, int fd) {
+    if (!ctx) return NULL;
+    SSL *ssl = SSL_new((SSL_CTX *)ctx);
+    if (!ssl) return NULL;
+    /* SSL_set_fd uses a BIO_NOCLOSE socket BIO, so SSL_free never closes fd —
+     * portico's close_connection remains the sole owner of the descriptor. */
+    if (SSL_set_fd(ssl, fd) != 1) { SSL_free(ssl); return NULL; }
+    SSL_set_accept_state(ssl);
+    return ssl;
+}
+
+void ws_tls_conn_free(void *ssl) {
+    if (ssl) SSL_free((SSL *)ssl);
+}
+
+int ws_tls_do_handshake(void *ssl) {
+    SSL *s = (SSL *)ssl;
+    int r = SSL_accept(s);
+    if (r == 1) return WS_TLS_DONE;
+    switch (SSL_get_error(s, r)) {
+        case SSL_ERROR_WANT_READ:  return WS_TLS_WANT_READ;
+        case SSL_ERROR_WANT_WRITE: return WS_TLS_WANT_WRITE;
+        default:                   return WS_TLS_ERROR;
+    }
+}
+
 #else  /* portico built without OpenSSL */
 
 int   ws_tls_available(void) { return 0; }
@@ -57,5 +83,8 @@ void *ws_tls_ctx_create(const char *cert_file, const char *key_file) {
     return NULL;
 }
 void  ws_tls_ctx_free(void *ctx) { (void)ctx; }
+void *ws_tls_conn_new(void *ctx, int fd) { (void)ctx; (void)fd; return NULL; }
+void  ws_tls_conn_free(void *ssl) { (void)ssl; }
+int   ws_tls_do_handshake(void *ssl) { (void)ssl; return WS_TLS_ERROR; }
 
 #endif /* PORTICO_TLS */

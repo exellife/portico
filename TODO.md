@@ -28,9 +28,11 @@ core-I/O surgery is isolated:
 - [x] **Stage 1 — foundation.** Optional OpenSSL linkage (`PORTICO_TLS`),
       `ws_config_t.tls_cert_file/tls_key_file`, `SSL_CTX` lifecycle + cert/key
       loading (`src/ws/ws_tls.c`, server-level only, no I/O change, fail-closed).
-- [ ] **Stage 2 — accept + handshake.** Per-conn `SSL*`; wrap on accept; drive
-      `SSL_accept` through epoll (`WANT_READ`/`WANT_WRITE`) before the WS/HTTP
-      handshake proceeds.
+- [x] **Stage 2 — accept + handshake.** Per-conn `SSL*` (`WS_STATE_TLS_HANDSHAKE`);
+      wrapped on accept in `process_new_connection`; `SSL_accept` driven through epoll
+      from both the EPOLLIN and EPOLLOUT paths (`WANT_READ`/`WANT_WRITE`), then drops to
+      `WS_STATE_CONNECTING`. `SSL_free` in `ws_connection_cleanup`. Verified: `openssl
+      s_client` completes a TLS 1.3 handshake; plaintext tests unchanged.
 - [ ] **Stage 3 — read/write integration.** Route `recv`→`SSL_read`,
       `send`→`SSL_write` in the hardened paths; reconcile `WANT_READ`/`WANT_WRITE`
       with the existing EPOLLOUT `out_buffer` backpressure. *The delicate part.*

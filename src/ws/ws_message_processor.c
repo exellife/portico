@@ -8,6 +8,7 @@
 #include "internal/ws_internal.h"
 #include "internal/ws_connection.h"
 #include "internal/ws_utils.h"
+#include "internal/ws_tls.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -79,7 +80,20 @@ int process_new_connection(int fd, const struct sockaddr_storage *client_addr, s
     /* Initialize connection */
     ws_connection_init(conn, fd, thread->thread_id, conn - thread->connections);
     ws_connection_set_state(conn, WS_STATE_CONNECTING); /* Start in connecting state */
-    
+
+    /* TLS listener: wrap the fd and start in the handshake state so the first
+     * reads drive SSL_accept rather than the HTTP/WS dispatch. Fail closed. */
+    if (server && server->tls_ctx) {
+        conn->ssl = ws_tls_conn_new(server->tls_ctx, fd);
+        if (!conn->ssl) {
+            WS_ERROR_LOG("Thread %u: TLS init failed for fd=%d", thread->thread_id, fd);
+            ws_connection_cleanup(conn);
+            close(fd);
+            return -1;
+        }
+        ws_connection_set_state(conn, WS_STATE_TLS_HANDSHAKE);
+    }
+
     /* Register in FD map for O(1) lookup (Bottleneck #5) */
     ws_register_fd(thread, fd, conn);
     

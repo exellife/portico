@@ -20,4 +20,20 @@ int ws_tls_available(void);
 void *ws_tls_ctx_create(const char *cert_file, const char *key_file);
 void  ws_tls_ctx_free(void *ctx);
 
+/* ---- per-connection (server side) ----------------------------------------- */
+
+/* ws_tls_do_handshake return codes. */
+#define WS_TLS_DONE        1   /* handshake complete */
+#define WS_TLS_WANT_READ   0   /* needs more bytes — wait for EPOLLIN */
+#define WS_TLS_WANT_WRITE  2   /* needs to write — wait for EPOLLOUT */
+#define WS_TLS_ERROR     (-1)  /* fatal — close the connection */
+
+/* Create a server-side SSL bound to fd (BIO_NOCLOSE: SSL_free never closes fd —
+ * portico owns the fd). Returns the SSL (void*) or NULL. */
+void *ws_tls_conn_new(void *ctx, int fd);
+void  ws_tls_conn_free(void *ssl);
+
+/* Drive the TLS accept handshake one step; returns a WS_TLS_* code. */
+int   ws_tls_do_handshake(void *ssl);
+
 #endif /* WS_TLS_H */

@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include "internal/ws_internal.h"
 #include "internal/ws_utils.h"
+#include "internal/ws_tls.h"
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -246,6 +247,12 @@ void ws_connection_init(ws_connection_t *conn, int fd, uint16_t thread_id, uint1
 
 void ws_connection_cleanup(ws_connection_t *conn) {
     if (!conn) return;
+
+    /* Free the TLS object (BIO_NOCLOSE, so this never touches the fd). */
+    if (conn->ssl) {
+        ws_tls_conn_free(conn->ssl);
+        conn->ssl = NULL;
+    }
 
     /* Cleanup write buffer */
     ws_connection_cleanup_write_buffer(conn);
