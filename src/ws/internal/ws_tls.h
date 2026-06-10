@@ -33,6 +33,10 @@ void  ws_tls_ctx_free(void *ctx);
 void *ws_tls_conn_new(void *ctx, int fd);
 void  ws_tls_conn_free(void *ssl);
 
+/* Best-effort one-shot close_notify (uni-directional): call while the fd is still
+ * open, before closing it. Non-blocking; we don't wait for the peer's alert. */
+void  ws_tls_conn_shutdown(void *ssl);
+
 /* Drive the TLS accept handshake one step; returns a WS_TLS_* code. */
 int   ws_tls_do_handshake(void *ssl);
 

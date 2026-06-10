@@ -596,124 +596,61 @@ int ws_send_binary_internal(ws_server_t *server, int fd, const void *data, size_
     return WS_OK;
 }
 
+/* Wake the connection's event thread after queueing a message for it. */
+static void ws_wake_thread(ws_event_thread_t *t) {
+    uint64_t v = 1;
+    if (write(t->wakeup_eventfd, &v, sizeof v) < 0)
+        WS_ERROR_LOG("Failed to wake thread %u", t->thread_id);
+}
+
 int ws_send_ping_internal(ws_server_t *server, int fd, const void *data, size_t len) {
     if (!server || fd < 0) return WS_ERROR_INVALID_ARGS;
-    
-    /* Limit ping payload to 125 bytes (RFC 6455) */
-    if (len > WS_FRAME_MAX_CONTROL_PAYLOAD) {
-        WS_ERROR_LOG("Ping payload too large: %zu bytes (max %d)", len, WS_FRAME_MAX_CONTROL_PAYLOAD);
-        return WS_ERROR_INVALID_ARGS;
-    }
+    if (len > WS_FRAME_MAX_CONTROL_PAYLOAD) return WS_ERROR_INVALID_ARGS;
 
-    /* Create ping frame */
-    uint8_t *frame_data = NULL;
-    size_t frame_len = 0;
-    
-    int result = ws_encode_frame(WS_OPCODE_PING, (const uint8_t*)data, len, &frame_data, &frame_len);
-    if (result != WS_OK) {
-        WS_ERROR_LOG("Failed to encode ping frame: %d", result);
-        return result;
-    }
-    
-    /* Send ping frame */
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
-    free(frame_data);
-    
-    if (sent < 0) {
-        WS_ERROR_LOG("Failed to send ping frame to fd=%d: %s", fd, strerror(errno));
-        return WS_ERROR_SOCKET;
-    } else if ((size_t)sent != frame_len) {
-        WS_ERROR_LOG("Partial ping frame sent to fd=%d: %zd/%zu bytes", fd, sent, frame_len);
-        return WS_ERROR_SOCKET;
-    }
-    
-    WS_DEBUG_LOG("Sent ping frame to fd=%d (%zu bytes payload)", fd, len);
-    return WS_OK;
+    /* Marshal to the connection's event thread (single-threaded per connection),
+     * so the frame is encrypted/sent on that thread — never raw on a TLS socket. */
+    ws_server_internal_t *internal = (ws_server_internal_t*)server;
+    ws_connection_t *conn = ws_connection_hash_find_and_ref(internal->global_hash, fd);
+    if (!conn) return WS_ERROR_NOT_FOUND;
+    if (conn->state != WS_STATE_OPEN) { ws_connection_unref(conn); return WS_ERROR_PROTOCOL; }
+
+    ws_event_thread_t *t = &internal->threads[conn->thread_id];
+    int rc = ws_mpsc_send_ping_message(t->message_queue, fd, data, len);
+    if (rc == 0) ws_wake_thread(t);
+    ws_connection_unref(conn);
+    return rc == 0 ? WS_OK : WS_ERROR_QUEUE_FULL;
 }
 
 int ws_send_pong_internal(ws_server_t *server, int fd, const void *data, size_t len) {
     if (!server || fd < 0) return WS_ERROR_INVALID_ARGS;
-    
-    /* Limit pong payload to 125 bytes (RFC 6455) */
-    if (len > WS_FRAME_MAX_CONTROL_PAYLOAD) {
-        WS_ERROR_LOG("Pong payload too large: %zu bytes (max %d)", len, WS_FRAME_MAX_CONTROL_PAYLOAD);
-        return WS_ERROR_INVALID_ARGS;
-    }
+    if (len > WS_FRAME_MAX_CONTROL_PAYLOAD) return WS_ERROR_INVALID_ARGS;
 
-    /* Create pong frame */
-    uint8_t *frame_data = NULL;
-    size_t frame_len = 0;
-    
-    int result = ws_encode_frame(WS_OPCODE_PONG, (const uint8_t*)data, len, &frame_data, &frame_len);
-    if (result != WS_OK) {
-        WS_ERROR_LOG("Failed to encode pong frame: %d", result);
-        return result;
-    }
-    
-    /* Send pong frame */
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
-    free(frame_data);
-    
-    if (sent < 0) {
-        WS_ERROR_LOG("Failed to send pong frame to fd=%d: %s", fd, strerror(errno));
-        return WS_ERROR_SOCKET;
-    } else if ((size_t)sent != frame_len) {
-        WS_ERROR_LOG("Partial pong frame sent to fd=%d: %zd/%zu bytes", fd, sent, frame_len);
-        return WS_ERROR_SOCKET;
-    }
-    
-    WS_DEBUG_LOG("Sent pong frame to fd=%d (%zu bytes payload)", fd, len);
-    return WS_OK;
+    ws_server_internal_t *internal = (ws_server_internal_t*)server;
+    ws_connection_t *conn = ws_connection_hash_find_and_ref(internal->global_hash, fd);
+    if (!conn) return WS_ERROR_NOT_FOUND;
+    if (conn->state != WS_STATE_OPEN) { ws_connection_unref(conn); return WS_ERROR_PROTOCOL; }
+
+    ws_event_thread_t *t = &internal->threads[conn->thread_id];
+    int rc = ws_mpsc_send_pong_message(t->message_queue, fd, data, len);
+    if (rc == 0) ws_wake_thread(t);
+    ws_connection_unref(conn);
+    return rc == 0 ? WS_OK : WS_ERROR_QUEUE_FULL;
 }
 
 int ws_close_connection_internal(ws_server_t *server, int fd, ws_close_code_t code, const char *reason) {
     if (!server || fd < 0) return WS_ERROR_INVALID_ARGS;
 
-    /* Prepare close frame payload */
-    uint8_t payload[125]; /* Max control frame payload */
-    size_t payload_len = 0;
-    
-    /* Add close code (2 bytes, network byte order) */
-    payload[0] = (code >> 8) & 0xFF;
-    payload[1] = code & 0xFF;
-    payload_len = 2;
-    
-    /* Add reason string if provided */
-    if (reason) {
-        size_t reason_len = strlen(reason);
-        /* Ensure total payload doesn't exceed 125 bytes */
-        if (payload_len + reason_len > WS_FRAME_MAX_CONTROL_PAYLOAD) {
-            reason_len = WS_FRAME_MAX_CONTROL_PAYLOAD - payload_len;
-        }
-        memcpy(payload + payload_len, reason, reason_len);
-        payload_len += reason_len;
-    }
+    /* Queue the close: the event thread sends the close frame (TLS-aware) and
+     * tears the connection down (process_close_message). */
+    ws_server_internal_t *internal = (ws_server_internal_t*)server;
+    ws_connection_t *conn = ws_connection_hash_find_and_ref(internal->global_hash, fd);
+    if (!conn) return WS_ERROR_NOT_FOUND;
 
-    /* Create close frame */
-    uint8_t *frame_data = NULL;
-    size_t frame_len = 0;
-    
-    int result = ws_encode_frame(WS_OPCODE_CLOSE, payload, payload_len, &frame_data, &frame_len);
-    if (result != WS_OK) {
-        WS_ERROR_LOG("Failed to encode close frame: %d", result);
-        return result;
-    }
-    
-    /* Send close frame */
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
-    free(frame_data);
-    
-    if (sent < 0) {
-        WS_DEBUG_LOG("Failed to send close frame to fd=%d: %s", fd, strerror(errno));
-        /* Continue with close even if send fails */
-    } else if ((size_t)sent != frame_len) {
-        WS_DEBUG_LOG("Partial close frame sent to fd=%d: %zd/%zu bytes", fd, sent, frame_len);
-    } else {
-        WS_DEBUG_LOG("Sent close frame to fd=%d (code=%d, reason='%s')", fd, code, reason ? reason : "");
-    }
-    
-    /* Note: The actual socket close is handled by the connection cleanup logic */
-    return WS_OK;
+    ws_event_thread_t *t = &internal->threads[conn->thread_id];
+    int rc = ws_mpsc_send_close_message(t->message_queue, fd, code, reason);
+    if (rc == 0) ws_wake_thread(t);
+    ws_connection_unref(conn);
+    return rc == 0 ? WS_OK : WS_ERROR_QUEUE_FULL;
 }
 
 ws_state_t ws_get_connection_state_internal(ws_server_t *server, int fd) {

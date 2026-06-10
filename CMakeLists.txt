@@ -93,5 +93,11 @@ if(PORTICO_BUILD_TESTS)
         add_test(NAME http_adversarial
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:http_server> ${CMAKE_SOURCE_DIR}/tests/http_test.py)
+        # TLS: HTTPS + WSS against one TLS listener (needs openssl to mint a cert).
+        find_program(OPENSSL_BIN openssl)
+        if(PORTICO_TLS AND OPENSSL_BIN)
+            add_test(NAME tls
+                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/tls_test.sh $<TARGET_FILE:http_server>)
+        endif()
     endif()
 endif()

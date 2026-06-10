@@ -634,6 +634,10 @@ void close_connection(ws_event_thread_t *thread, int fd) {
      * and its epoll registration keeps firing). Double-close within a single
      * wakeup is prevented by the event loop's per-fd `closed` guard; once the fd
      * is EPOLL_CTL_DEL'd and closed here, no further events can reference it. */
+    /* TLS: send a best-effort close_notify while the fd is still open (runs on
+     * the event thread, so it's safe to touch the SSL object here). */
+    if (conn && conn->ssl) ws_tls_conn_shutdown(conn->ssl);
+
     ws_unregister_fd(thread, fd);
     epoll_ctl(thread->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
     close(fd);

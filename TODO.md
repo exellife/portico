@@ -53,11 +53,18 @@ core-I/O surgery is isolated:
       *Remaining gap:* `ws_server.c` `ws_send_ping/pong/close_internal` (public API) still
       do an inline raw `send(fd)` and may be called cross-thread — TLS-unsafe there; not on
       pgforge's hot path. Make them queue via MPSC (like text/binary) in Stage 4.
-- [ ] **Stage 4 — close + tests.** `SSL_shutdown`; TLS-safe public ping/close (queue via
-      MPSC); HTTPS + WSS adversarial (handshake under load, partial records, slow peer); a
-      TLS CTest in the suite.
-- [ ] Later: SIGHUP cert reload; ALPN; optional ACME (or document Caddy as the
-      zero-code alternative when "no nginx" just means "easier TLS").
+- [x] **Stage 4 — close + tests.** `SSL_shutdown` (best-effort close_notify in
+      `close_connection`, before `close(fd)`); the public `ws_send_ping/pong/close` now
+      **queue via MPSC** (resolved on the event thread → TLS-safe + thread-safe, no more
+      inline raw `send(fd)`); a permanent **`tls` CTest** (dependency-free HTTPS +
+      raw-socket WSS against one listener, self-signed cert minted per run). 4 suites
+      green; ASan clean.
+
+**TLS is COMPLETE** — portico serves HTTPS + WSS standalone (no nginx). Enable with
+`ws_config_t.tls_cert_file/tls_key_file`; plaintext stays the default. Optional follow-ups:
+- [ ] SIGHUP cert reload (hot-rotate without a restart).
+- [ ] ALPN (advertise `http/1.1`); later HTTP/2 if ever wanted.
+- [ ] Optional ACME, or document Caddy as the zero-code alternative for easy auto-HTTPS.
 
 ---
 

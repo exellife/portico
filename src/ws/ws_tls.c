@@ -65,6 +65,10 @@ void ws_tls_conn_free(void *ssl) {
     if (ssl) SSL_free((SSL *)ssl);
 }
 
+void ws_tls_conn_shutdown(void *ssl) {
+    if (ssl) SSL_shutdown((SSL *)ssl);   /* sends our close_notify; best-effort */
+}
+
 int ws_tls_do_handshake(void *ssl) {
     SSL *s = (SSL *)ssl;
     int r = SSL_accept(s);
@@ -114,6 +118,7 @@ void *ws_tls_ctx_create(const char *cert_file, const char *key_file) {
 void  ws_tls_ctx_free(void *ctx) { (void)ctx; }
 void *ws_tls_conn_new(void *ctx, int fd) { (void)ctx; (void)fd; return NULL; }
 void  ws_tls_conn_free(void *ssl) { (void)ssl; }
+void  ws_tls_conn_shutdown(void *ssl) { (void)ssl; }
 int   ws_tls_do_handshake(void *ssl) { (void)ssl; return WS_TLS_ERROR; }
 int   ws_tls_read(void *ssl, void *buf, int len) { (void)ssl; (void)buf; (void)len; errno = EIO; return -1; }
 int   ws_tls_write(void *ssl, const void *buf, int len) { (void)ssl; (void)buf; (void)len; errno = EIO; return -1; }
