@@ -14,6 +14,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <stdio.h>
 
@@ -211,6 +212,7 @@ void ws_connection_init(ws_connection_t *conn, int fd, uint16_t thread_id, uint1
 
     conn->fd = (uint32_t)fd;
     conn->state = WS_STATE_CONNECTING;
+    conn->connect_time = (uint32_t)time(NULL);  /* accept time, for the slowloris reaper */
     conn->thread_id = thread_id;
     conn->pool_index = pool_index;
     conn->read_buffer_idx = UINT32_MAX;  /* No buffer allocated */

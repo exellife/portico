@@ -387,6 +387,7 @@ static void reap_stale_connections(ws_event_thread_t *thread) {
         ws_connection_t *conn = &thread->connections[i];
         if ((int)conn->fd < 0) continue;
         if (conn->state != WS_STATE_CONNECTING && conn->state != WS_STATE_TLS_HANDSHAKE) continue;
+        if (conn->connect_time == 0) continue;   /* not yet stamped — never treat as ancient */
         if (now - (time_t)conn->connect_time >= (time_t)timeout) {
             WS_DEBUG_LOG("Thread %u: reaping stalled connection fd=%u (state=%u, age=%lds)",
                          thread->thread_id, conn->fd, conn->state, (long)(now - (time_t)conn->connect_time));

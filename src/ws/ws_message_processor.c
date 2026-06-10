@@ -77,10 +77,9 @@ int process_new_connection(int fd, const struct sockaddr_storage *client_addr, s
         return -1;
     }
 
-    /* Initialize connection */
+    /* Initialize connection (ws_connection_init stamps connect_time for the reaper) */
     ws_connection_init(conn, fd, thread->thread_id, conn - thread->connections);
     ws_connection_set_state(conn, WS_STATE_CONNECTING); /* Start in connecting state */
-    conn->connect_time = (uint32_t)time(NULL);  /* accept time, for the slowloris reaper */
 
     /* TLS listener: wrap the fd and start in the handshake state so the first
      * reads drive SSL_accept rather than the HTTP/WS dispatch. Fail closed. */
