@@ -135,6 +135,33 @@ latency — see `tests/stress/README.md`).
 - [ ] **Investigate the p99.9 knee** under the two-host setup (item 1) before
       optimizing — don't optimize against single-box measurement noise.
 
+## 4b. Static file serving — the nginx-replacement primitive
+
+The capability that turns portico from "API/WS transport" into a standalone web
+server: serve `Host → static_root` directly (HTML, assets), no nginx in front.
+The hard part is that regular-file `read()`/`open()` can block on disk, which
+would stall the event thread that owns those connections — so async file I/O is
+the foundation, built first as a standalone, isolation-tested library.
+
+- [x] **Async file I/O library** (`include/portico_aio.h`, `src/aio/`,
+      `tests/aio_test.c`). Loop-agnostic: submit a `pread`, get a completion via an
+      injectable `wakeup_fd` (eventfd) + `drain()` — the same eventfd/queue seam the
+      WS path already uses. Backend vtable with a **blocking** backend (the portable
+      fallback *and* the correctness oracle for the threaded backends). Not yet
+      linked into `portico` — depends only on libc + pthreads, tested in isolation
+      (24 asserts, ASan/UBSan clean: correctness, EOF/tail/zero-len, `-errno`
+      propagation, wakeup signalling, ordering, arg validation, 1000-op queue).
+- [ ] **Threadpool backend** — N workers + bounded queue; differential-test vs the
+      blocking oracle; TSan-clean. The portable high-throughput path.
+- [ ] **io_uring backend** — Linux fast path; same differential suite. Keep its ring
+      separate from the network epoll (joined by the eventfd) for portability.
+- [ ] **Offload `open()`/`stat()` too**, not just `read()` (a cold dentry blocks).
+- [ ] **`portico_res_file`** on top: validate path (traversal/symlink — stays in the
+      HTTP layer, not the I/O lib), stat, open, stream via aio into the existing
+      `out_buffer`/send path. Range requests, ETag/Last-Modified, MIME by extension.
+- [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
+      (`sendfile` can't encrypt; same limit nginx has without kTLS).
+
 ## 5. Trading-grade gateway (future / aspirational)
 
 Only if the trading ambition firms up. The architecture doesn't block any of it;

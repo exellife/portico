@@ -66,6 +66,16 @@ if(PORTICO_TLS)
     target_compile_definitions(portico PUBLIC PORTICO_TLS=1)
 endif()
 
+# --- async file I/O (standalone, loop-agnostic) ---
+# Deliberately NOT linked into `portico` yet: it depends only on libc + pthreads
+# and is developed/tested in isolation. The eventual file-serving path will link
+# it and integrate via its wakeup eventfd. See include/portico_aio.h.
+file(GLOB PORTICO_AIO_SOURCES CONFIGURE_DEPENDS src/aio/*.c)
+add_library(portico_aio STATIC ${PORTICO_AIO_SOURCES})
+target_include_directories(portico_aio PUBLIC include PRIVATE src/aio)
+target_compile_options(portico_aio PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_link_libraries(portico_aio PUBLIC Threads::Threads)
+
 # --- examples ---
 if(PORTICO_BUILD_EXAMPLES)
     add_executable(echo_server examples/echo_server.c)
@@ -81,6 +91,12 @@ endif()
 # --- tests ---
 if(PORTICO_BUILD_TESTS)
     enable_testing()
+
+    # Async file I/O: pure C unit test, no server/sockets — runs in isolation.
+    add_executable(aio_test tests/aio_test.c)
+    target_link_libraries(aio_test PRIVATE portico_aio)
+    add_test(NAME aio COMMAND aio_test)
+
     find_program(PYTHON3 python3)
     if(PYTHON3 AND PORTICO_BUILD_EXAMPLES)
         add_test(NAME ws_adversarial
