@@ -45,12 +45,17 @@ static void tls_set_epollout(ws_event_thread_t *thread, int fd, int want_out) {
  * EPOLLOUT paths (a step can need either). On completion the connection drops to
  * WS_STATE_CONNECTING so the normal HTTP/WS dispatch takes over (its reads/writes
  * become SSL-aware in stage 3). Returns 0 to keep the connection, -1 to close. */
-static int handle_tls_handshake(ws_event_thread_t *thread, ws_connection_t *conn) {
+static int handle_tls_handshake(ws_event_thread_t *thread, ws_connection_t *conn,
+                                ws_server_internal_t *server) {
     switch (ws_tls_do_handshake(conn->ssl)) {
         case WS_TLS_DONE:
             tls_set_epollout(thread, conn->fd, 0);      /* ensure EPOLLOUT disarmed */
             ws_connection_set_state(conn, WS_STATE_CONNECTING);
-            return 0;
+            /* The client may have pipelined its request into the same flight as
+             * the handshake's final record; that data now sits in OpenSSL's
+             * buffer and edge-triggered epoll won't refire for it. Drive the
+             * initial dispatch once so it is processed. */
+            return portico_initial_dispatch(thread, conn, server);
         case WS_TLS_WANT_READ:
             tls_set_epollout(thread, conn->fd, 0);
             return 0;                                    /* wait for next EPOLLIN (ET) */
@@ -89,7 +94,7 @@ int handle_connection_read(ws_event_thread_t *thread, int fd) {
 
     if (conn->state == WS_STATE_TLS_HANDSHAKE) {
         /* Encrypted: complete the TLS handshake before any HTTP/WS dispatch. */
-        return handle_tls_handshake(thread, conn);
+        return handle_tls_handshake(thread, conn, server);
     } else if (conn->state == WS_STATE_CONNECTING) {
         /* First read: decide WebSocket handshake vs. plain HTTP (portico). */
         WS_DEBUG_LOG("Thread %u: Initial dispatch for fd=%d", thread->thread_id, fd);
@@ -598,7 +603,8 @@ int handle_connection_write(ws_event_thread_t *thread, int fd) {
     /* A writable event during the TLS handshake means a WANT_WRITE step can now
      * proceed — drive it instead of the HTTP drain. */
     if (conn->state == WS_STATE_TLS_HANDSHAKE) {
-        if (handle_tls_handshake(thread, conn) < 0) {
+        ws_server_internal_t *server = (ws_server_internal_t *)thread->server_instance;
+        if (handle_tls_handshake(thread, conn, server) < 0) {
             close_connection(thread, fd);
             return -1;
         }

@@ -33,11 +33,20 @@ core-I/O surgery is isolated:
       from both the EPOLLIN and EPOLLOUT paths (`WANT_READ`/`WANT_WRITE`), then drops to
       `WS_STATE_CONNECTING`. `SSL_free` in `ws_connection_cleanup`. Verified: `openssl
       s_client` completes a TLS 1.3 handshake; plaintext tests unchanged.
-- [ ] **Stage 3 — read/write integration.** Route `recv`→`SSL_read`,
-      `send`→`SSL_write` in the hardened paths; reconcile `WANT_READ`/`WANT_WRITE`
-      with the existing EPOLLOUT `out_buffer` backpressure. *The delicate part.*
-- [ ] **Stage 4 — close + tests.** `SSL_shutdown`/`SSL_free`; HTTPS + WSS
-      end-to-end + adversarial (handshake under load, partial records, slow peer).
+- [x] **Stage 3a — HTTPS (HTTP path).** The conn-based HTTP I/O (`read_into_recv`,
+      `portico_conn_send`, `conn_out_drain`) now goes through `conn_recv`/`conn_write_raw`
+      → `ws_tls_read`/`ws_tls_write`, which keep recv/send semantics (WANT_* → `EAGAIN`)
+      so the EPOLLOUT backpressure + ET-drain logic is unchanged. On handshake DONE the
+      initial dispatch is driven once to consume any pipelined request. Verified: `curl
+      -k https://` → 200 + body, keep-alive over TLS, plaintext ctest 3/3, ASan clean.
+      (Known edge, TLS 1.3 no-reneg: a read that genuinely needs *write* is mapped to
+      EAGAIN — fine in practice; revisit if client-initiated KeyUpdate ever matters.)
+- [ ] **Stage 3b — WSS (WebSocket path).** The WS sends are **fd-based** (`ws_frame.c`,
+      `ws_handshake.c` 101 response, `ws_server.c` `ws_send_*`), so they can't reach
+      `conn->ssl`. Thread the conn/SSL through them (or look up by fd) + make the WS read
+      sites (`ws_connection_handler.c` handshake peek + frame read) SSL-aware.
+- [ ] **Stage 4 — close + tests.** `SSL_shutdown`; HTTPS + WSS adversarial (handshake
+      under load, partial records, slow peer); a TLS CTest.
 - [ ] Later: SIGHUP cert reload; ALPN; optional ACME (or document Caddy as the
       zero-code alternative when "no nginx" just means "easier TLS").
 

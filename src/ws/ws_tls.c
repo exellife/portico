@@ -1,6 +1,7 @@
 #include "ws_tls.h"
 
 #include <stdio.h>
+#include <errno.h>
 
 #ifdef PORTICO_TLS
 #include <openssl/ssl.h>
@@ -75,6 +76,34 @@ int ws_tls_do_handshake(void *ssl) {
     }
 }
 
+int ws_tls_read(void *ssl, void *buf, int len) {
+    SSL *s = (SSL *)ssl;
+    int n = SSL_read(s, buf, len);
+    if (n > 0) return n;
+    switch (SSL_get_error(s, n)) {
+        case SSL_ERROR_ZERO_RETURN:                   /* peer's close_notify */
+            return 0;
+        case SSL_ERROR_WANT_READ:
+        case SSL_ERROR_WANT_WRITE:                    /* needs more I/O — wait */
+            errno = EAGAIN; return -1;
+        default:
+            errno = EIO; return -1;
+    }
+}
+
+int ws_tls_write(void *ssl, const void *buf, int len) {
+    SSL *s = (SSL *)ssl;
+    int n = SSL_write(s, buf, len);
+    if (n > 0) return n;
+    switch (SSL_get_error(s, n)) {
+        case SSL_ERROR_WANT_READ:
+        case SSL_ERROR_WANT_WRITE:                    /* socket full / needs read — backpressure */
+            errno = EAGAIN; return -1;
+        default:
+            errno = EIO; return -1;
+    }
+}
+
 #else  /* portico built without OpenSSL */
 
 int   ws_tls_available(void) { return 0; }
@@ -86,5 +115,7 @@ void  ws_tls_ctx_free(void *ctx) { (void)ctx; }
 void *ws_tls_conn_new(void *ctx, int fd) { (void)ctx; (void)fd; return NULL; }
 void  ws_tls_conn_free(void *ssl) { (void)ssl; }
 int   ws_tls_do_handshake(void *ssl) { (void)ssl; return WS_TLS_ERROR; }
+int   ws_tls_read(void *ssl, void *buf, int len) { (void)ssl; (void)buf; (void)len; errno = EIO; return -1; }
+int   ws_tls_write(void *ssl, const void *buf, int len) { (void)ssl; (void)buf; (void)len; errno = EIO; return -1; }
 
 #endif /* PORTICO_TLS */

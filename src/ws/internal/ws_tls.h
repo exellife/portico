@@ -36,4 +36,10 @@ void  ws_tls_conn_free(void *ssl);
 /* Drive the TLS accept handshake one step; returns a WS_TLS_* code. */
 int   ws_tls_do_handshake(void *ssl);
 
+/* recv()/send()-compatible TLS I/O so the existing EAGAIN-based read/write loops
+ * work unchanged: returns >0 bytes, 0 on a clean peer close, or -1 with errno set
+ * (EAGAIN when the TLS layer just needs more I/O, otherwise a fatal errno). */
+int   ws_tls_read(void *ssl, void *buf, int len);
+int   ws_tls_write(void *ssl, const void *buf, int len);
+
 #endif /* WS_TLS_H */

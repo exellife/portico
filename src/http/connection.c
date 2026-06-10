@@ -8,6 +8,7 @@
  * server->callbacks.on_http_request. */
 #define _GNU_SOURCE
 #include "internal/ws_internal.h"
+#include "internal/ws_tls.h"
 #include "http_internal.h"
 
 #include <stdlib.h>
@@ -16,6 +17,23 @@
 #include <errno.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+
+/* Connection I/O chokepoints: go through the TLS layer when this connection is
+ * encrypted, else raw non-blocking socket I/O. Both keep recv()/send() semantics
+ * (>0 bytes, 0 = peer closed, -1 with errno EAGAIN on would-block), so the
+ * backpressure / edge-triggered-drain logic below is identical for plain & TLS. */
+static ssize_t conn_recv(ws_connection_t *conn, void *buf, size_t len) {
+#ifdef PORTICO_TLS
+    if (conn->ssl) return ws_tls_read(conn->ssl, buf, (int)len);
+#endif
+    return recv(conn->fd, buf, len, MSG_DONTWAIT);
+}
+static ssize_t conn_write_raw(ws_connection_t *conn, const void *buf, size_t len) {
+#ifdef PORTICO_TLS
+    if (conn->ssl) return ws_tls_write(conn->ssl, buf, (int)len);
+#endif
+    return send(conn->fd, buf, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+}
 
 /* Drain the socket into conn->recv_buffer (edge-triggered → read to EAGAIN),
  * growing on demand. Returns 0 on success, -1 if the peer closed or errored. */
@@ -34,7 +52,7 @@ static int read_into_recv(ws_connection_t *conn) {
             conn->recv_buffer_capacity = nc;
         }
         size_t space = conn->recv_buffer_capacity - conn->recv_buffer_used;
-        ssize_t n = recv(conn->fd, conn->recv_buffer + conn->recv_buffer_used, space, MSG_DONTWAIT);
+        ssize_t n = conn_recv(conn, conn->recv_buffer + conn->recv_buffer_used, space);
         if (n == 0) return -1;
         if (n < 0) return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
         conn->recv_buffer_used += (size_t)n;
@@ -67,8 +85,8 @@ static int conn_set_epollout(ws_event_thread_t *thread, int fd, int want_out) {
  * progress/would-block, -1 on a fatal socket error. */
 static int conn_out_drain(ws_connection_t *conn) {
     while (conn->out_sent < conn->out_used) {
-        ssize_t n = send(conn->fd, conn->out_buffer + conn->out_sent,
-                         conn->out_used - conn->out_sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+        ssize_t n = conn_write_raw(conn, conn->out_buffer + conn->out_sent,
+                                   conn->out_used - conn->out_sent);
         if (n > 0) { conn->out_sent += (size_t)n; continue; }
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
         return -1;
@@ -114,8 +132,7 @@ int portico_conn_send(ws_event_thread_t *thread, ws_connection_t *conn,
 
     size_t off = 0;
     while (off < len) {
-        ssize_t n = send(conn->fd, (const char *)buf + off, len - off,
-                         MSG_NOSIGNAL | MSG_DONTWAIT);
+        ssize_t n = conn_write_raw(conn, (const char *)buf + off, len - off);
         if (n > 0) { off += (size_t)n; continue; }
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (conn_out_append(conn, (const char *)buf + off, len - off) != 0) return -1;
