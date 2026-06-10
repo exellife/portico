@@ -116,8 +116,8 @@ int handle_connection_read(ws_event_thread_t *thread, int fd) {
 
 int handle_websocket_handshake(ws_event_thread_t *thread, ws_connection_t *conn, ws_server_internal_t *server) {
     char buffer[4096];
-    ssize_t bytes_read = recv(conn->fd, buffer, sizeof(buffer) - 1, MSG_DONTWAIT);
-    
+    ssize_t bytes_read = ws_conn_socket_read(conn, buffer, sizeof(buffer) - 1);
+
     if (bytes_read <= 0) {
         if (bytes_read == 0) {
             WS_DEBUG_LOG("Thread %u: Connection fd=%d closed during handshake", thread->thread_id, conn->fd);
@@ -133,7 +133,7 @@ int handle_websocket_handshake(ws_event_thread_t *thread, ws_connection_t *conn,
                  thread->thread_id, bytes_read, conn->fd);
 
     /* Process WebSocket handshake */
-    if (ws_process_handshake(conn->fd, buffer, &server->callbacks) == 0) {
+    if (ws_process_handshake(conn, buffer, &server->callbacks) == 0) {
         WS_DEBUG_LOG("Thread %u: WebSocket handshake completed for fd=%d", thread->thread_id, conn->fd);
         
         /* Update connection state to OPEN */
@@ -189,8 +189,8 @@ int handle_websocket_frames(ws_event_thread_t *thread, ws_connection_t *conn, ws
         }
 
         size_t space_left = conn->recv_buffer_capacity - conn->recv_buffer_used;
-        ssize_t bytes_read = recv(conn->fd, conn->recv_buffer + conn->recv_buffer_used,
-                                  space_left, MSG_DONTWAIT);
+        ssize_t bytes_read = ws_conn_socket_read(conn, conn->recv_buffer + conn->recv_buffer_used,
+                                                 space_left);
         if (bytes_read == 0) {
             WS_DEBUG_LOG("Thread %u: Connection fd=%d closed by client", thread->thread_id, conn->fd);
             return -1;
@@ -267,7 +267,7 @@ int handle_websocket_frames(ws_event_thread_t *thread, ws_connection_t *conn, ws
  * down. Returns WS_FRAME_CLOSE_REQUESTED so callers propagate the clean close. */
 static int ws_fail_connection(ws_connection_t *conn, uint16_t code) {
     ws_connection_set_state(conn, WS_STATE_CLOSING);
-    ws_send_close_frame(conn->fd, code, "");
+    ws_send_close_frame(conn, code, "");
     return WS_FRAME_CLOSE_REQUESTED;
 }
 
@@ -325,7 +325,7 @@ int process_websocket_frame(ws_event_thread_t *thread, ws_connection_t *conn, ws
         case WS_OPCODE_PING:
             /* Ping frame - respond with pong */
             WS_DEBUG_LOG("Thread %u: Received ping on fd=%d, sending pong", thread->thread_id, conn->fd);
-            if (ws_send_pong_frame(conn->fd, frame->payload, frame->payload_len) < 0) {
+            if (ws_send_pong_frame(conn, frame->payload, frame->payload_len) < 0) {
                 WS_ERROR_LOG("Thread %u: Failed to send pong response on fd=%d", thread->thread_id, conn->fd);
                 return -1;
             }
@@ -381,9 +381,9 @@ int process_websocket_frame(ws_event_thread_t *thread, ws_connection_t *conn, ws
             /* Echo the peer's close code back (§7.1.4). Reason is not echoed —
              * a bare code is a compliant response. */
             if (frame->payload_len >= 2) {
-                ws_send_close_frame(conn->fd, close_code, "");
+                ws_send_close_frame(conn, close_code, "");
             } else {
-                ws_send_close_frame(conn->fd, 0, NULL); /* empty payload */
+                ws_send_close_frame(conn, 0, NULL); /* empty payload */
             }
 
             if (server->callbacks.on_close) {

@@ -500,18 +500,18 @@ int ws_utf8_valid(const unsigned char *s, size_t len);
 int ws_parse_handshake_request(const char *request, ws_handshake_info_t *info);
 int ws_create_handshake_response(const ws_handshake_info_t *info, const char *selected_protocol,
                                 char *response, size_t response_size);
-int ws_send_handshake_error(int fd, int error_code, const char *error_message);
-int ws_process_handshake(int fd, const char *request, const ws_callbacks_t *callbacks);
+int ws_send_handshake_error(ws_connection_t *conn, int error_code, const char *error_message);
+int ws_process_handshake(ws_connection_t *conn, const char *request, const ws_callbacks_t *callbacks);
 
 /* Frame functions */
 int ws_parse_frame(const uint8_t *data, size_t data_len, ws_frame_t *frame);
 int ws_encode_frame(uint8_t opcode, const uint8_t *payload, size_t payload_len, 
                    uint8_t **frame_data, size_t *frame_len);
-int ws_send_text_frame(int fd, const char *text, size_t len);
-int ws_send_binary_frame(int fd, const void *data, size_t len);
-int ws_send_ping_frame(int fd, const void *data, size_t len);
-int ws_send_pong_frame(int fd, const void *data, size_t len);
-int ws_send_close_frame(int fd, uint16_t code, const char *reason);
+int ws_send_text_frame(ws_connection_t *conn, const char *text, size_t len);
+int ws_send_binary_frame(ws_connection_t *conn, const void *data, size_t len);
+int ws_send_ping_frame(ws_connection_t *conn, const void *data, size_t len);
+int ws_send_pong_frame(ws_connection_t *conn, const void *data, size_t len);
+int ws_send_close_frame(ws_connection_t *conn, uint16_t code, const char *reason);
 
 /* Buffered frame sending (Bottleneck #4 optimization) */
 int ws_send_text_frame_buffered(ws_connection_t *conn, const char *text, size_t len);

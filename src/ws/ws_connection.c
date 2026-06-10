@@ -370,14 +370,29 @@ int ws_connection_init_write_buffer(ws_connection_t *conn) {
     return 0;
 }
 
+/* Socket I/O chokepoint: SSL when encrypted, else raw non-blocking recv/send.
+ * recv()/send()-compatible so all callers' EAGAIN logic is unchanged. */
+ssize_t ws_conn_socket_read(ws_connection_t *conn, void *buf, size_t len) {
+#ifdef PORTICO_TLS
+    if (conn->ssl) return ws_tls_read(conn->ssl, buf, (int)len);
+#endif
+    return recv(conn->fd, buf, len, MSG_DONTWAIT);
+}
+
+ssize_t ws_conn_socket_write(ws_connection_t *conn, const void *buf, size_t len) {
+#ifdef PORTICO_TLS
+    if (conn->ssl) return ws_tls_write(conn->ssl, buf, (int)len);
+#endif
+    return send(conn->fd, buf, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+}
+
 /* Flush write buffer to socket */
 int ws_connection_flush_write_buffer(ws_connection_t *conn) {
     if (!conn || !conn->write_buffer || conn->write_buffer_used == 0) {
         return 0;
     }
     
-    ssize_t sent = send(conn->fd, conn->write_buffer, conn->write_buffer_used, 
-                       MSG_NOSIGNAL | MSG_DONTWAIT);
+    ssize_t sent = ws_conn_socket_write(conn, conn->write_buffer, conn->write_buffer_used);
     conn->syscall_count++;
     
     if (sent < 0) {
@@ -416,7 +431,7 @@ int ws_connection_buffered_send(ws_connection_t *conn, const void *data, size_t 
     if (!conn->write_buffer) {
         if (ws_connection_init_write_buffer(conn) != 0) {
             /* Fallback to direct send */
-            ssize_t sent = send(conn->fd, data, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+            ssize_t sent = ws_conn_socket_write(conn, data, len);
             if (sent > 0) {
                 #ifdef WS_ENABLE_STATISTICS
                 atomic_fetch_add(&conn->bytes_sent, sent);
@@ -434,7 +449,7 @@ int ws_connection_buffered_send(ws_connection_t *conn, const void *data, size_t 
         }
         
         /* Send large message directly */
-        ssize_t sent = send(conn->fd, data, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+        ssize_t sent = ws_conn_socket_write(conn, data, len);
         conn->syscall_count++;
         
         if (sent > 0) {

@@ -41,12 +41,21 @@ core-I/O surgery is isolated:
       -k https://` → 200 + body, keep-alive over TLS, plaintext ctest 3/3, ASan clean.
       (Known edge, TLS 1.3 no-reneg: a read that genuinely needs *write* is mapped to
       EAGAIN — fine in practice; revisit if client-initiated KeyUpdate ever matters.)
-- [ ] **Stage 3b — WSS (WebSocket path).** The WS sends are **fd-based** (`ws_frame.c`,
-      `ws_handshake.c` 101 response, `ws_server.c` `ws_send_*`), so they can't reach
-      `conn->ssl`. Thread the conn/SSL through them (or look up by fd) + make the WS read
-      sites (`ws_connection_handler.c` handshake peek + frame read) SSL-aware.
-- [ ] **Stage 4 — close + tests.** `SSL_shutdown`; HTTPS + WSS adversarial (handshake
-      under load, partial records, slow peer); a TLS CTest.
+- [x] **Stage 3b — WSS (WebSocket path).** Centralized `ws_conn_socket_read`/
+      `ws_conn_socket_write` (SSL-or-raw by `conn->ssl`) in ws_connection.c; converted the
+      fd-based frame senders (`ws_send_*_frame`) and `ws_process_handshake`/
+      `ws_send_handshake_error` to **conn-based** (all callers had `conn`; the MPSC
+      ping/pong/close consumers now resolve conn by fd), plus the WS frame read and the
+      write_buffer flush. So every WS socket op routes through SSL on a TLS connection —
+      no plaintext can leak into the cipher stream. Verified: `wss://` echo (multi-frame,
+      keep-alive) via the `websockets` client; plaintext WS adversarial ctest 3/3; ASan
+      clean over repeated WSS connect/echo/close.
+      *Remaining gap:* `ws_server.c` `ws_send_ping/pong/close_internal` (public API) still
+      do an inline raw `send(fd)` and may be called cross-thread — TLS-unsafe there; not on
+      pgforge's hot path. Make them queue via MPSC (like text/binary) in Stage 4.
+- [ ] **Stage 4 — close + tests.** `SSL_shutdown`; TLS-safe public ping/close (queue via
+      MPSC); HTTPS + WSS adversarial (handshake under load, partial records, slow peer); a
+      TLS CTest in the suite.
 - [ ] Later: SIGHUP cert reload; ALPN; optional ACME (or document Caddy as the
       zero-code alternative when "no nginx" just means "easier TLS").
 

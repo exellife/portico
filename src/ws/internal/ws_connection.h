@@ -173,4 +173,13 @@ int ws_connection_flush_write_buffer(ws_connection_t *conn);
 int ws_connection_buffered_send(ws_connection_t *conn, const void *data, size_t len);
 void ws_connection_cleanup_write_buffer(ws_connection_t *conn);
 
+/* The single socket I/O chokepoint: TLS (SSL_read/SSL_write) when this connection
+ * is encrypted, else a raw non-blocking recv/send. recv()/send()-compatible
+ * (>0 bytes, 0 = peer closed, -1 with errno EAGAIN on would-block), so every WS
+ * read/write site can call these and behave identically for plaintext and TLS.
+ * MUST be used for ALL socket writes on a connection — a raw send() on a TLS
+ * connection would inject plaintext into the cipher stream and corrupt it. */
+ssize_t ws_conn_socket_read(ws_connection_t *conn, void *buf, size_t len);
+ssize_t ws_conn_socket_write(ws_connection_t *conn, const void *buf, size_t len);
+
 #endif /* WS_CONNECTION_H */

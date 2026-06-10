@@ -38,6 +38,10 @@ int main(void) {
     cfg.enable_nodelay      = true;
     cfg.backlog             = 512;
 
+    /* Optional TLS for WSS testing: set TLS_CERT + TLS_KEY (PEM paths). */
+    cfg.tls_cert_file = getenv("TLS_CERT");
+    cfg.tls_key_file  = getenv("TLS_KEY");
+
     g_server = ws_server_create(&cfg);
     if (!g_server) { fprintf(stderr, "ws_server_create failed\n"); return 1; }
 

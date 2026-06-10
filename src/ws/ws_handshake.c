@@ -214,7 +214,7 @@ int ws_create_handshake_response(const ws_handshake_info_t *info, const char *se
     return written;
 }
 
-int ws_send_handshake_error(int fd, int error_code, const char *error_message) {
+int ws_send_handshake_error(ws_connection_t *conn, int error_code, const char *error_message) {
     char response[512];
     const char *status_text;
     
@@ -244,7 +244,7 @@ int ws_send_handshake_error(int fd, int error_code, const char *error_message) {
         "%s",
         error_code, status_text, strlen(error_message), error_message);
     
-    ssize_t sent = send(fd, response, len, MSG_NOSIGNAL);
+    ssize_t sent = ws_conn_socket_write(conn, response, len);
     return (sent == len) ? 0 : -1;
 }
 
@@ -252,39 +252,39 @@ int ws_send_handshake_error(int fd, int error_code, const char *error_message) {
  * High-Level Handshake Processing
  * ============================================================================ */
 
-int ws_process_handshake(int fd, const char *request, const ws_callbacks_t *callbacks) {
+int ws_process_handshake(ws_connection_t *conn, const char *request, const ws_callbacks_t *callbacks) {
     if (!request || !callbacks) {
         return -1;
     }
-    
+
     ws_handshake_info_t info;
     if (ws_parse_handshake_request(request, &info) != 0) {
-        ws_send_handshake_error(fd, info.error_code, NULL);
+        ws_send_handshake_error(conn, info.error_code, NULL);
         return -1;
     }
-    
+
     /* Call application handshake callback if provided */
     const char *selected_protocol = NULL;
     if (callbacks->on_handshake) {
-        int result = callbacks->on_handshake(fd, &info, &selected_protocol);
+        int result = callbacks->on_handshake(conn->fd, &info, &selected_protocol);
         if (result != 0) {
-            ws_send_handshake_error(fd, 403, "Forbidden");
+            ws_send_handshake_error(conn, 403, "Forbidden");
             return -1;
         }
     }
-    
+
     /* Create and send handshake response */
     char response[1024];
     int response_len = ws_create_handshake_response(&info, selected_protocol, response, sizeof(response));
     if (response_len < 0) {
-        ws_send_handshake_error(fd, 500, "Internal Server Error");
+        ws_send_handshake_error(conn, 500, "Internal Server Error");
         return -1;
     }
-    
-    ssize_t sent = send(fd, response, response_len, MSG_NOSIGNAL);
+
+    ssize_t sent = ws_conn_socket_write(conn, response, response_len);
     if (sent != response_len) {
         return -1;
     }
-    
+
     return 0;
 }

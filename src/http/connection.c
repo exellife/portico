@@ -272,7 +272,7 @@ int portico_initial_dispatch(ws_event_thread_t *thread, ws_connection_t *conn,
         if (!reqstr) return -1;
         memcpy(reqstr, conn->recv_buffer, headers_len);
         reqstr[headers_len] = '\0';
-        int rc = ws_process_handshake(conn->fd, reqstr, &server->callbacks);
+        int rc = ws_process_handshake(conn, reqstr, &server->callbacks);
         free(reqstr);
         if (rc != 0) return -1;
 

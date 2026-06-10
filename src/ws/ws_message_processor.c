@@ -223,11 +223,13 @@ int process_ping_message(int fd, const void *data, size_t len, void *context) {
         return -1;
     }
 
-    WS_DEBUG_LOG("Thread %u: Processing outbound ping message for fd=%d (%zu bytes)", 
+    WS_DEBUG_LOG("Thread %u: Processing outbound ping message for fd=%d (%zu bytes)",
                  thread->thread_id, fd, len);
 
-    /* Send ping frame directly */
-    if (ws_send_ping_frame(fd, data, len) < 0) {
+    /* Frame senders are conn-based (TLS-aware); resolve the connection. */
+    ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
+    if (!conn) return -1;
+    if (ws_send_ping_frame(conn, data, len) < 0) {
         WS_ERROR_LOG("Thread %u: Failed to send ping frame to fd=%d", thread->thread_id, fd);
         return -1;
     }
@@ -241,11 +243,12 @@ int process_pong_message(int fd, const void *data, size_t len, void *context) {
         return -1;
     }
 
-    WS_DEBUG_LOG("Thread %u: Processing outbound pong message for fd=%d (%zu bytes)", 
+    WS_DEBUG_LOG("Thread %u: Processing outbound pong message for fd=%d (%zu bytes)",
                  thread->thread_id, fd, len);
 
-    /* Send pong frame directly */
-    if (ws_send_pong_frame(fd, data, len) < 0) {
+    ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
+    if (!conn) return -1;
+    if (ws_send_pong_frame(conn, data, len) < 0) {
         WS_ERROR_LOG("Thread %u: Failed to send pong frame to fd=%d", thread->thread_id, fd);
         return -1;
     }
@@ -259,17 +262,17 @@ int process_close_message(int fd, ws_close_code_t code, const char *reason, void
         return -1;
     }
 
-    WS_DEBUG_LOG("Thread %u: Processing close message for fd=%d (code=%d, reason='%s')", 
+    WS_DEBUG_LOG("Thread %u: Processing close message for fd=%d (code=%d, reason='%s')",
                  thread->thread_id, fd, code, reason ? reason : "");
 
-    /* Send close frame */
-    if (ws_send_close_frame(fd, (uint16_t)code, reason) < 0) {
-        WS_ERROR_LOG("Thread %u: Failed to send close frame to fd=%d", thread->thread_id, fd);
-        return -1;
-    }
-
-    /* Find connection using O(1) FD map lookup */
+    /* Find connection using O(1) FD map lookup (conn-based, TLS-aware send). */
     ws_connection_t *conn = ws_find_connection_by_fd(thread, fd);
+
+    /* Send close frame */
+    if (conn && ws_send_close_frame(conn, (uint16_t)code, reason) < 0) {
+        WS_ERROR_LOG("Thread %u: Failed to send close frame to fd=%d", thread->thread_id, fd);
+        /* fall through to teardown regardless */
+    }
 
     if (conn) {
         WS_DEBUG_LOG("Thread %u: Closing connection fd=%d after sending close frame", 

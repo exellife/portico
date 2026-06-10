@@ -309,87 +309,58 @@ int ws_encode_frame(uint8_t opcode, const uint8_t *payload, size_t payload_len,
  * High-Level Frame Processing Functions
  * ============================================================================ */
 
-int ws_send_text_frame(int fd, const char *text, size_t len) {
+/* These emit a complete frame through ws_conn_socket_write (TLS-aware), so they
+ * are correct on both plaintext and TLS connections and must be called on the
+ * connection's event thread. */
+int ws_send_text_frame(ws_connection_t *conn, const char *text, size_t len) {
     uint8_t *frame_data;
     size_t frame_len;
-    
-    WS_DEBUG_LOG("ws_send_text_frame: Encoding %zu bytes for fd=%d", len, fd);
-    
-    if (ws_encode_frame(WS_OPCODE_TEXT, (const uint8_t*)text, len, &frame_data, &frame_len) != 0) {
-        WS_DEBUG_LOG("ws_send_text_frame: Frame encoding failed for fd=%d", fd);
+    if (ws_encode_frame(WS_OPCODE_TEXT, (const uint8_t*)text, len, &frame_data, &frame_len) != 0)
         return -1;
-    }
-    
-    WS_DEBUG_LOG("ws_send_text_frame: Encoded frame is %zu bytes (header + %zu payload) for fd=%d", 
-                 frame_len, len, fd);
-    
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
-    WS_DEBUG_LOG("ws_send_text_frame: Sent %zd of %zu bytes to fd=%d", sent, frame_len, fd);
-    
+    ssize_t sent = ws_conn_socket_write(conn, frame_data, frame_len);
     free(frame_data);
-    
-    if (sent == (ssize_t)frame_len) {
-        WS_DEBUG_LOG("ws_send_text_frame: Successfully sent complete frame to fd=%d", fd);
-        return 0;
-    } else {
-        WS_DEBUG_LOG("ws_send_text_frame: Partial/failed send to fd=%d (sent=%zd, expected=%zu)", 
-                     fd, sent, frame_len);
-        return -1;
-    }
-}
-
-int ws_send_binary_frame(int fd, const void *data, size_t len) {
-    uint8_t *frame_data;
-    size_t frame_len;
-    
-    if (ws_encode_frame(WS_OPCODE_BINARY, (const uint8_t*)data, len, &frame_data, &frame_len) != 0) {
-        return -1;
-    }
-    
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
-    free(frame_data);
-    
     return (sent == (ssize_t)frame_len) ? 0 : -1;
 }
 
-int ws_send_ping_frame(int fd, const void *data, size_t len) {
+int ws_send_binary_frame(ws_connection_t *conn, const void *data, size_t len) {
     uint8_t *frame_data;
     size_t frame_len;
-    
-    if (ws_encode_frame(WS_OPCODE_PING, (const uint8_t*)data, len, &frame_data, &frame_len) != 0) {
+    if (ws_encode_frame(WS_OPCODE_BINARY, (const uint8_t*)data, len, &frame_data, &frame_len) != 0)
         return -1;
-    }
-    
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
+    ssize_t sent = ws_conn_socket_write(conn, frame_data, frame_len);
     free(frame_data);
-    
     return (sent == (ssize_t)frame_len) ? 0 : -1;
 }
 
-int ws_send_pong_frame(int fd, const void *data, size_t len) {
+int ws_send_ping_frame(ws_connection_t *conn, const void *data, size_t len) {
     uint8_t *frame_data;
     size_t frame_len;
-    
-    if (ws_encode_frame(WS_OPCODE_PONG, (const uint8_t*)data, len, &frame_data, &frame_len) != 0) {
+    if (ws_encode_frame(WS_OPCODE_PING, (const uint8_t*)data, len, &frame_data, &frame_len) != 0)
         return -1;
-    }
-    
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
+    ssize_t sent = ws_conn_socket_write(conn, frame_data, frame_len);
     free(frame_data);
-    
     return (sent == (ssize_t)frame_len) ? 0 : -1;
 }
 
-int ws_send_close_frame(int fd, uint16_t code, const char *reason) {
+int ws_send_pong_frame(ws_connection_t *conn, const void *data, size_t len) {
+    uint8_t *frame_data;
+    size_t frame_len;
+    if (ws_encode_frame(WS_OPCODE_PONG, (const uint8_t*)data, len, &frame_data, &frame_len) != 0)
+        return -1;
+    ssize_t sent = ws_conn_socket_write(conn, frame_data, frame_len);
+    free(frame_data);
+    return (sent == (ssize_t)frame_len) ? 0 : -1;
+}
+
+int ws_send_close_frame(ws_connection_t *conn, uint16_t code, const char *reason) {
     /* RFC 6455 §5.5.1: a Close frame may carry an empty payload (no status
      * code). code == 0 is the sentinel for that — never a real close code. */
     if (code == 0) {
         uint8_t *empty_frame;
         size_t empty_len;
-        if (ws_encode_frame(WS_OPCODE_CLOSE, NULL, 0, &empty_frame, &empty_len) != 0) {
+        if (ws_encode_frame(WS_OPCODE_CLOSE, NULL, 0, &empty_frame, &empty_len) != 0)
             return -1;
-        }
-        ssize_t es = send(fd, empty_frame, empty_len, MSG_NOSIGNAL);
+        ssize_t es = ws_conn_socket_write(conn, empty_frame, empty_len);
         free(empty_frame);
         return (es == (ssize_t)empty_len) ? 0 : -1;
     }
@@ -397,33 +368,20 @@ int ws_send_close_frame(int fd, uint16_t code, const char *reason) {
     size_t reason_len = reason ? strlen(reason) : 0;
     size_t payload_len = 2 + reason_len; /* 2 bytes for close code + reason */
     uint8_t *payload = malloc(payload_len);
+    if (!payload) return -1;
 
-    if (!payload) {
-        return -1;
-    }
-
-    /* Encode close code in network byte order */
-    payload[0] = (code >> 8) & 0xFF;
+    payload[0] = (code >> 8) & 0xFF;   /* close code, network byte order */
     payload[1] = code & 0xFF;
-
-    /* Copy reason string */
-    if (reason_len > 0) {
-        memcpy(payload + 2, reason, reason_len);
-    }
+    if (reason_len > 0) memcpy(payload + 2, reason, reason_len);
 
     uint8_t *frame_data;
     size_t frame_len;
-    
     int result = ws_encode_frame(WS_OPCODE_CLOSE, payload, payload_len, &frame_data, &frame_len);
     free(payload);
-    
-    if (result != 0) {
-        return -1;
-    }
-    
-    ssize_t sent = send(fd, frame_data, frame_len, MSG_NOSIGNAL);
+    if (result != 0) return -1;
+
+    ssize_t sent = ws_conn_socket_write(conn, frame_data, frame_len);
     free(frame_data);
-    
     return (sent == (ssize_t)frame_len) ? 0 : -1;
 }
 
@@ -615,7 +573,7 @@ int ws_process_received_frame(ws_connection_t *conn, const ws_frame_t *frame,
             
         case WS_OPCODE_PING:
             /* Automatically respond with pong */
-            ws_send_pong_frame(conn->fd, frame->payload, frame->payload_len);
+            ws_send_pong_frame(conn, frame->payload, frame->payload_len);
             
             if (callbacks->on_ping) {
                 return callbacks->on_ping(conn->fd, frame->payload, frame->payload_len, conn->user_data);
@@ -650,7 +608,7 @@ int ws_process_received_frame(ws_connection_t *conn, const ws_frame_t *frame,
             }
             
             /* Send close response */
-            ws_send_close_frame(conn->fd, close_code, close_reason);
+            ws_send_close_frame(conn, close_code, close_reason);
             
             if (callbacks->on_close) {
                 int result = callbacks->on_close(conn->fd, close_code, close_reason, conn->user_data);
