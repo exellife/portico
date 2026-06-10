@@ -93,6 +93,9 @@ if(PORTICO_BUILD_TESTS)
         add_test(NAME http_adversarial
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:http_server> ${CMAKE_SOURCE_DIR}/tests/http_test.py)
+        # Accept-time IP gate: a blacklisted peer is dropped before any handshake.
+        add_test(NAME accept_gate
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/accept_test.sh $<TARGET_FILE:http_server>)
         # TLS: HTTPS + WSS against one TLS listener (needs openssl to mint a cert).
         find_program(OPENSSL_BIN openssl)
         if(PORTICO_TLS AND OPENSSL_BIN)

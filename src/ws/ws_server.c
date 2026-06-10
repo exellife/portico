@@ -82,6 +82,19 @@ static void* ws_acceptor_thread_worker(void *arg) {
         connection_count++;
         WS_DEBUG_LOG("Accepted connection %u from fd=%d", connection_count, client_fd);
 
+        /* Accept-time gate: let the application reject by peer IP before any
+         * per-connection work (handshake, slot, epoll). Cheapest place to drop a
+         * blacklisted IP or a flood. */
+        if (server->callbacks.on_accept) {
+            char ip[46];
+            ws_sockaddr_ip(&client_addr, ip, sizeof ip);
+            if (server->callbacks.on_accept(ip, server->callbacks.accept_user_data) != 0) {
+                WS_DEBUG_LOG("Connection from %s rejected by on_accept", ip);
+                close(client_fd);
+                continue;
+            }
+        }
+
         /* Set socket to non-blocking mode */
         if (ws_set_socket_nonblocking(client_fd) < 0) {
             WS_ERROR_LOG("Failed to set client socket non-blocking: %s", strerror(errno));

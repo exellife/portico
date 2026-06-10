@@ -182,8 +182,9 @@ void ws_connection_cleanup_write_buffer(ws_connection_t *conn);
 ssize_t ws_conn_socket_read(ws_connection_t *conn, void *buf, size_t len);
 ssize_t ws_conn_socket_write(ws_connection_t *conn, const void *buf, size_t len);
 
-/* Write the connection's direct peer IP (numeric) into out (>= 46 bytes), NUL-
- * terminated. out is set to "" if the address family is unknown. */
+/* Write a numeric IP for a socket address (or a connection's peer) into out
+ * (>= 46 bytes), NUL-terminated; "" if the address family is unknown. */
+void ws_sockaddr_ip(const struct sockaddr_storage *ss, char *out, size_t out_len);
 void ws_conn_peer_ip(const ws_connection_t *conn, char *out, size_t out_len);
 
 #endif /* WS_CONNECTION_H */

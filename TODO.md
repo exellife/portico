@@ -96,6 +96,14 @@ What you need to actually run it behind nginx and operate it at scale.
       then the leftmost `X-Forwarded-For`, else the direct peer. Spoof-safety covered in
       `http_test.py`. *Remaining:* PROXY-protocol support; proxy-aware IP for WS
       (capture XFF at the handshake, not just the peer).
+- [x] **Accept-time allow/deny hook.** `ws_callbacks_t.on_accept(client_ip, user_data)`
+      runs on the acceptor thread before any handshake/allocation; non-zero drops the peer.
+      The cheap enforcement point for IP blacklists / connection caps (policy stays in the
+      consumer, e.g. pgforge). `http_server` demos it via `DENY_IP`; CTest `accept_gate`.
+      Gates on the *direct* peer — behind a proxy, per-client bans go at the app layer.
+- [ ] **Per-IP flood guard (optional, built-in).** A configurable max-connections-per-IP /
+      accept-rate cap inside portico, so consumers don't each reimplement it. The on_accept
+      hook already lets a consumer do this; a built-in is just convenience.
 - [ ] **Observability.** Expose per-connection + per-thread metrics: latency
       histograms, send-buffer depth, slow-consumer/disconnect counters, dropped
       frames, active connections, accept rate. Structured logging with levels.

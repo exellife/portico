@@ -20,6 +20,12 @@ static int on_binary(int fd, const void *data, size_t len, void *u) {
     return 0;
 }
 
+/* --- accept gate: reject one IP (demo of an IP blacklist) via DENY_IP env --- */
+static int on_accept(const char *client_ip, void *deny_ip) {
+    if (deny_ip && strcmp(client_ip, (const char *)deny_ip) == 0) return -1;  /* deny */
+    return 0;  /* allow */
+}
+
 /* --- HTTP routing --- */
 static int on_http(const portico_request_t *req, portico_response_t *res, void *u) {
     (void)u;
@@ -86,6 +92,8 @@ int main(void) {
     ws_callbacks_t cb = {0};
     cb.on_binary_message = on_binary;
     cb.on_http_request   = on_http;
+    cb.on_accept         = on_accept;          /* IP gate (demo) */
+    cb.accept_user_data  = getenv("DENY_IP");  /* reject this IP, if set */
 
     if (ws_server_start(g_server, &cb) != 0) {
         fprintf(stderr, "start failed\n");

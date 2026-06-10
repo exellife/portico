@@ -130,6 +130,13 @@ typedef struct {
 } ws_handshake_info_t;
 
 /* Callback function types */
+/* Accept-time gate, called on the acceptor thread with the direct peer IP
+ * (numeric string) BEFORE any handshake or per-connection allocation. Return 0
+ * to accept, non-zero to drop the connection immediately. The cheapest place to
+ * enforce an IP blacklist / connection cap. NOTE: this is the direct peer — behind
+ * a proxy that's the proxy's IP; per-client bans there belong at the app layer
+ * (using the proxy-resolved portico_req_client_ip). */
+typedef int (*ws_on_accept_fn)(const char *client_ip, void *user_data);
 typedef int (*ws_on_handshake_fn)(int fd, const ws_handshake_info_t *info, const char **selected_protocol);
 typedef int (*ws_on_connect_fn)(int fd, void *user_data);
 typedef int (*ws_on_text_message_fn)(int fd, const char *data, size_t len, void *user_data);
@@ -140,6 +147,8 @@ typedef int (*ws_on_close_fn)(int fd, ws_close_code_t code, const char *reason, 
 typedef void (*ws_on_disconnect_fn)(int fd, void *user_data);
 
 typedef struct {
+    ws_on_accept_fn on_accept;                 /* Accept-time allow/deny gate (by peer IP) */
+    void *accept_user_data;                    /* passed to on_accept */
     ws_on_handshake_fn on_handshake;           /* Handshake validation callback */
     ws_on_connect_fn on_connect;               /* New connection established */
     ws_on_text_message_fn on_text_message;     /* Text message received */

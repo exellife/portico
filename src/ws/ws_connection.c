@@ -388,14 +388,18 @@ ssize_t ws_conn_socket_write(ws_connection_t *conn, const void *buf, size_t len)
     return send(conn->fd, buf, len, MSG_NOSIGNAL | MSG_DONTWAIT);
 }
 
-void ws_conn_peer_ip(const ws_connection_t *conn, char *out, size_t out_len) {
+void ws_sockaddr_ip(const struct sockaddr_storage *ss, char *out, size_t out_len) {
     if (!out || out_len == 0) return;
     out[0] = '\0';
-    const struct sockaddr *sa = (const struct sockaddr *)&conn->client_addr;
+    const struct sockaddr *sa = (const struct sockaddr *)ss;
     if (sa->sa_family == AF_INET)
         inet_ntop(AF_INET, &((const struct sockaddr_in *)sa)->sin_addr, out, (socklen_t)out_len);
     else if (sa->sa_family == AF_INET6)
         inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)sa)->sin6_addr, out, (socklen_t)out_len);
+}
+
+void ws_conn_peer_ip(const ws_connection_t *conn, char *out, size_t out_len) {
+    ws_sockaddr_ip(&conn->client_addr, out, out_len);
 }
 
 /* Flush write buffer to socket */
