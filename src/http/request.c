@@ -96,8 +96,17 @@ static int header_token_present(const portico_request_t *req, const char *name,
     const char *v = portico_req_header(req, name, &vlen);
     if (!v) return 0;
     size_t tlen = strlen(token);
-    for (size_t i = 0; i + tlen <= vlen; i++)
-        if (strncasecmp(v + i, token, tlen) == 0) return 1;
+    /* L-7: compare whole comma/OWS-delimited tokens, not a substring — a substring
+     * scan let "keep-alive-foo" match "keep-alive" and "not-close" match "close",
+     * so a non-conforming peer could flip keep-alive handling. */
+    size_t i = 0;
+    while (i < vlen) {
+        while (i < vlen && (v[i] == ',' || v[i] == ' ' || v[i] == '\t')) i++;   /* skip delims/OWS */
+        size_t j = i;
+        while (j < vlen && v[j] != ',' && v[j] != ' ' && v[j] != '\t') j++;     /* token bounds */
+        if (j - i == tlen && strncasecmp(v + i, token, tlen) == 0) return 1;
+        i = j;
+    }
     return 0;
 }
 

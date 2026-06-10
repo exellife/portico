@@ -113,6 +113,20 @@ def main(host, port):
     r.check("pipelined requests", s1 == 200 and s2 == 200 and b"portico" in b2)
     c.close()
 
+    # L-7: "Connection: not-close" contains "close" only as a substring (not a
+    # token) — it must NOT close the HTTP/1.1 connection. Two requests on one socket.
+    c = HTTP(host, port)
+    c.send(req("GET", "/health", extra="Connection: not-close\r\n"))
+    s1, _, _ = c.recv_response()
+    try:
+        c.send(req("GET", "/health", extra="Connection: not-close\r\n"))
+        s2, _, _ = c.recv_response()
+        ok = (s1 == 200 and s2 == 200)
+    except Exception:
+        ok = False
+    r.check("'not-close' token doesn't close conn (L-7)", ok)
+    c.close()
+
     section("body framing")
     c = HTTP(host, port)
     payload = b"x" * 5000

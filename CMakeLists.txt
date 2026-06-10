@@ -98,6 +98,9 @@ if(PORTICO_BUILD_TESTS)
         add_test(NAME http_adversarial
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:http_server> ${CMAKE_SOURCE_DIR}/tests/http_test.py)
+        # Proxy client-IP resolution (M-8): rightmost X-Forwarded-For + IP validation.
+        add_test(NAME proxy_ip
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/proxy_ip_test.sh $<TARGET_FILE:http_server>)
         # Accept-time IP gate: a blacklisted peer is dropped before any handshake.
         add_test(NAME accept_gate
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/accept_test.sh $<TARGET_FILE:http_server>)

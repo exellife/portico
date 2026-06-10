@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>   /* inet_pton — validate proxy-supplied client IPs (M-8) */
 
 /* Connection I/O chokepoints: go through the TLS layer when this connection is
  * encrypted, else raw non-blocking socket I/O. Both keep recv()/send() semantics
@@ -182,27 +183,44 @@ int portico_conn_on_writable(ws_event_thread_t *thread, ws_connection_t *conn) {
     return conn->out_close_when_drained ? -1 : 0;     /* finish deferred close */
 }
 
-/* Fill req->client_ip: the proxy-supplied client (X-Real-IP, then the leftmost
- * X-Forwarded-For) when trust_proxy is set and present, else the direct peer. */
+/* True iff `s` (length n) is a syntactically valid IPv4 or IPv6 address. */
+static bool valid_ip(const char *s, size_t n) {
+    if (n == 0 || n >= INET6_ADDRSTRLEN) return false;
+    char buf[INET6_ADDRSTRLEN];
+    memcpy(buf, s, n); buf[n] = '\0';
+    struct in_addr a4; struct in6_addr a6;
+    return inet_pton(AF_INET, buf, &a4) == 1 || inet_pton(AF_INET6, buf, &a6) == 1;
+}
+
+/* Fill req->client_ip: the proxy-supplied client when trust_proxy is set, else the
+ * direct peer. From X-Forwarded-For we take the RIGHTMOST element — the address our
+ * (single) trusted proxy appended is the real peer it saw; the leftmost elements
+ * are client-supplied and forgeable (M-8: trusting them let a client spoof its IP,
+ * bypassing the per-IP rate limiter and poisoning audit logs). The result must
+ * parse as a real IP, else we ignore it. X-Real-IP (the proxy's single-valued
+ * assertion) is honored first, also validated. Deployments behind >1 proxy should
+ * front pgforge with the one that sets a trustworthy X-Real-IP. */
 static void resolve_client_ip(const ws_connection_t *conn, const ws_server_internal_t *server,
                               portico_request_t *req) {
     if (server->config.trust_proxy) {
         size_t vlen = 0;
         const char *xr = portico_req_header(req, "X-Real-IP", &vlen);
-        if (xr && vlen) {
-            size_t n = vlen < sizeof req->client_ip - 1 ? vlen : sizeof req->client_ip - 1;
-            memcpy(req->client_ip, xr, n); req->client_ip[n] = '\0';
+        if (xr && valid_ip(xr, vlen)) {
+            memcpy(req->client_ip, xr, vlen); req->client_ip[vlen] = '\0';
             return;
         }
         const char *xff = portico_req_header(req, "X-Forwarded-For", &vlen);
         if (xff && vlen) {
-            size_t i = 0;
-            while (i < vlen && (xff[i] == ' ' || xff[i] == '\t')) i++;     /* trim left */
-            size_t j = i;
-            while (j < vlen && xff[j] != ',' && xff[j] != ' ' && xff[j] != '\t') j++;
-            size_t n = j - i;
-            if (n > sizeof req->client_ip - 1) n = sizeof req->client_ip - 1;
-            if (n) { memcpy(req->client_ip, xff + i, n); req->client_ip[n] = '\0'; return; }
+            size_t end = vlen;                                              /* rtrim OWS */
+            while (end > 0 && (xff[end-1] == ' ' || xff[end-1] == '\t')) end--;
+            size_t start = end;                                            /* last (rightmost) element */
+            while (start > 0 && xff[start-1] != ',') start--;
+            while (start < end && (xff[start] == ' ' || xff[start] == '\t')) start++;  /* ltrim OWS */
+            size_t n = end - start;
+            if (valid_ip(xff + start, n)) {
+                memcpy(req->client_ip, xff + start, n); req->client_ip[n] = '\0';
+                return;
+            }
         }
     }
     ws_conn_peer_ip(conn, req->client_ip, sizeof req->client_ip);
