@@ -213,6 +213,8 @@ void ws_connection_init(ws_connection_t *conn, int fd, uint16_t thread_id, uint1
     conn->fd = (uint32_t)fd;
     conn->state = WS_STATE_CONNECTING;
     conn->connect_time = (uint32_t)time(NULL);  /* accept time, for the slowloris reaper */
+    conn->last_activity = conn->connect_time;   /* keepalive idle clock starts now (H-8) */
+    conn->ping_sent_at = 0;
     conn->thread_id = thread_id;
     conn->pool_index = pool_index;
     conn->read_buffer_idx = UINT32_MAX;  /* No buffer allocated */
@@ -328,6 +330,11 @@ void ws_connection_add_bytes_sent(ws_connection_t *conn, uint64_t bytes) {
 
 void ws_connection_add_bytes_received(ws_connection_t *conn, uint64_t bytes) {
     if (!conn) return;
+    /* Keepalive (H-8): this is the single choke point for ALL inbound data (WS and
+     * HTTP), so refresh the idle clock here. Any inbound byte — including a PONG —
+     * means the peer is alive, so clear any outstanding keepalive PING too. */
+    conn->last_activity = (uint32_t)time(NULL);
+    conn->ping_sent_at = 0;
     #ifdef WS_ENABLE_STATISTICS
     atomic_fetch_add(&conn->bytes_received, bytes);
     #else

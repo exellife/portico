@@ -105,6 +105,10 @@ if(PORTICO_BUILD_TESTS)
         # racing the event loop into a double-close / fd-reuse (finding H-7).
         add_test(NAME reaper
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/reaper_test.sh $<TARGET_FILE:http_server>)
+        # Keepalive + idle reaping of established connections (H-8): an idle WS is
+        # PINGed and reaped on pong timeout; an idle HTTP keep-alive is reaped too.
+        add_test(NAME keepalive
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/keepalive_test.sh $<TARGET_FILE:http_server>)
         # TLS: HTTPS + WSS against one TLS listener (needs openssl to mint a cert).
         find_program(OPENSSL_BIN openssl)
         if(PORTICO_TLS AND OPENSSL_BIN)

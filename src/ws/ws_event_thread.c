@@ -373,25 +373,71 @@ void ws_cleanup_event_thread(ws_event_thread_t *thread) {
 
 extern void close_connection(ws_event_thread_t *thread, int fd);
 
-/* Slowloris defense: close connections still in a pre-request state (TLS handshake
- * or the initial header read) past the handshake timeout. A connection leaves these
- * states the moment it completes its first request/handshake, so this never touches
- * an established WebSocket or an idle HTTP keep-alive — only stalled/incomplete ones.
- * Measured from accept (conn->connect_time), so dribbling bytes can't reset it. */
+/* Connection reaper, run once per second after each event batch (see H-7). Two jobs:
+ *
+ *  1. Slowloris defense (pre-request): close a connection still stuck in the TLS
+ *     handshake or the initial header read past handshake_timeout. Measured from
+ *     accept (connect_time), so dribbling bytes can't reset it.
+ *
+ *  2. Keepalive + idle reaping of ESTABLISHED connections (H-8): ping_interval and
+ *     pong_timeout used to be dead config — an OPEN WebSocket or an idle HTTP
+ *     keep-alive that went silent (incl. a vanished-but-ACKing peer) was never
+ *     timed out, a slow resource-exhaustion vector. Now an idle OPEN socket is
+ *     probed with a PING and closed if no PONG (or any data) arrives within
+ *     pong_timeout; an idle HTTP keep-alive (no ping channel) is reaped once it has
+ *     been silent past ping_interval + pong_timeout. Disabled when ping_interval==0. */
 static void reap_stale_connections(ws_event_thread_t *thread) {
     ws_server_internal_t *server = (ws_server_internal_t *)thread->server_instance;
     if (!server) return;
-    uint32_t timeout = server->config.handshake_timeout ? server->config.handshake_timeout : 10;
+    uint32_t hs_timeout    = server->config.handshake_timeout ? server->config.handshake_timeout : 10;
+    uint32_t ping_interval = server->config.ping_interval;   /* 0 = keepalive disabled */
+    uint32_t pong_timeout  = server->config.pong_timeout ? server->config.pong_timeout : 10;
     time_t now = time(NULL);
     for (uint32_t i = 0; i < thread->max_connections; i++) {
         ws_connection_t *conn = &thread->connections[i];
         if ((int)conn->fd < 0) continue;
-        if (conn->state != WS_STATE_CONNECTING && conn->state != WS_STATE_TLS_HANDSHAKE) continue;
-        if (conn->connect_time == 0) continue;   /* not yet stamped — never treat as ancient */
-        if (now - (time_t)conn->connect_time >= (time_t)timeout) {
-            WS_DEBUG_LOG("Thread %u: reaping stalled connection fd=%u (state=%u, age=%lds)",
-                         thread->thread_id, conn->fd, conn->state, (long)(now - (time_t)conn->connect_time));
-            close_connection(thread, (int)conn->fd);
+
+        /* (1) pre-request states: stalled handshake / header read. */
+        if (conn->state == WS_STATE_CONNECTING || conn->state == WS_STATE_TLS_HANDSHAKE) {
+            if (conn->connect_time == 0) continue;   /* not yet stamped — never treat as ancient */
+            if (now - (time_t)conn->connect_time >= (time_t)hs_timeout) {
+                WS_DEBUG_LOG("Thread %u: reaping stalled connection fd=%u (state=%u, age=%lds)",
+                             thread->thread_id, conn->fd, conn->state, (long)(now - (time_t)conn->connect_time));
+                close_connection(thread, (int)conn->fd);
+            }
+            continue;
+        }
+
+        /* (2) established states: keepalive / idle reaping. */
+        if (ping_interval == 0 || conn->last_activity == 0) continue;
+        time_t idle = now - (time_t)conn->last_activity;
+
+        if (conn->state == WS_STATE_OPEN) {
+            if (conn->ping_sent_at != 0) {
+                /* A PING is outstanding: no PONG (or any data) within pong_timeout
+                 * means the peer is gone. (ping_sent_at is cleared on any inbound
+                 * data in ws_connection_add_bytes_received.) */
+                if (now - (time_t)conn->ping_sent_at >= (time_t)pong_timeout) {
+                    WS_DEBUG_LOG("Thread %u: reaping fd=%u (pong timeout)", thread->thread_id, conn->fd);
+                    close_connection(thread, (int)conn->fd);
+                }
+            } else if (idle >= (time_t)ping_interval) {
+                /* Idle past the interval: probe with a PING. Runs on this connection's
+                 * event thread, so the TLS-aware write is safe here. A failed write
+                 * means the socket is already dead — close it. */
+                if (ws_send_ping_frame(conn, NULL, 0) == 0)
+                    conn->ping_sent_at = (uint32_t)now;
+                else
+                    close_connection(thread, (int)conn->fd);
+            }
+        } else if (conn->state == WS_STATE_HTTP) {
+            /* Idle HTTP keep-alive: no WS ping channel, so reap once it has been
+             * silent past ping_interval + pong_timeout. */
+            if (idle >= (time_t)ping_interval + (time_t)pong_timeout) {
+                WS_DEBUG_LOG("Thread %u: reaping idle HTTP keep-alive fd=%u (idle=%lds)",
+                             thread->thread_id, conn->fd, (long)idle);
+                close_connection(thread, (int)conn->fd);
+            }
         }
     }
 }

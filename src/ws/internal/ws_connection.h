@@ -50,9 +50,11 @@ struct ws_connection {
     /* Reference counting for thread safety */
     _Atomic uint32_t ref_count;    /* Reference count for safe cleanup */
     
-    /* Timestamps (32-bit offsets from server start time) */
-    uint32_t connect_time;         /* Connection time offset */
-    uint32_t last_activity;        /* Last activity offset */
+    /* Timestamps (absolute unix seconds, truncated to 32 bits) */
+    uint32_t connect_time;         /* When the connection was accepted */
+    uint32_t last_activity;        /* Last time inbound data was seen (keepalive) */
+    uint32_t ping_sent_at;         /* When a keepalive PING was sent and is awaiting
+                                    * a PONG; 0 = none outstanding (H-8) */
     
     /* Buffer pool indices (UINT32_MAX = no buffer allocated) */
     uint32_t read_buffer_idx;      /* Index in buffer pool */

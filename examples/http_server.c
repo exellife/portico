@@ -85,6 +85,12 @@ int main(void) {
      * Lowered by the reaper test to exercise stale-connection reaping quickly. */
     const char *ht = getenv("HANDSHAKE_TIMEOUT");
     if (ht && *ht) cfg.handshake_timeout = (uint32_t)atoi(ht);
+    /* Keepalive tunables (H-8), lowered by the keepalive test. PING_INTERVAL=0
+     * disables idle keepalive/reaping of established connections. */
+    const char *pi = getenv("PING_INTERVAL");
+    if (pi && *pi) cfg.ping_interval = (uint32_t)atoi(pi);
+    const char *pt = getenv("PONG_TIMEOUT");
+    if (pt && *pt) cfg.pong_timeout = (uint32_t)atoi(pt);
 
     /* Optional TLS: set TLS_CERT + TLS_KEY (PEM paths) to serve HTTPS/WSS. */
     cfg.tls_cert_file = getenv("TLS_CERT");
