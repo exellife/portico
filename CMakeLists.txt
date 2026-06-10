@@ -86,6 +86,11 @@ if(PORTICO_BUILD_TESTS)
         add_test(NAME ws_adversarial
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:echo_server> ${CMAKE_SOURCE_DIR}/tests/ws_test.py)
+        # Server-initiated close teardown (C-2): exercise ws_close_connection ->
+        # process_close_message under churn (double-free / slot aliasing / fd leak).
+        add_test(NAME ws_srvclose
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:echo_server> ${CMAKE_SOURCE_DIR}/tests/srvclose_test.py)
         # http_server speaks both protocols, so it exercises WS + HTTP on one port.
         add_test(NAME ws_adversarial_unified
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py

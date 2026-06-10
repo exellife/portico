@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -13,6 +14,13 @@ static volatile sig_atomic_t g_running = 1;
 
 static int on_binary(int fd, const void *data, size_t len, void *user_data) {
     (void)user_data;
+    /* Test hook: the magic message triggers a SERVER-initiated close, exercising
+     * the ws_close_connection -> process_close_message teardown path (finding C-2,
+     * which no app otherwise reaches). */
+    if (len == 12 && memcmp(data, "__srvclose__", 12) == 0) {
+        ws_close_connection(g_server, fd, WS_CLOSE_NORMAL, "bye");
+        return 0;
+    }
     ws_send_binary(g_server, fd, data, len);   /* echo */
     return 0;
 }

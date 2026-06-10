@@ -298,6 +298,13 @@ int process_close_message(int fd, ws_close_code_t code, const char *reason, void
         /* Unregister from FD map for O(1) lookup (Bottleneck #5) */
         ws_unregister_fd(thread, fd);
 
+        /* SECURITY (C-2): actually release the socket. This path only did
+         * EPOLL_CTL_DEL and never close(2)'d the fd, leaking one socket per
+         * server-initiated close. Shut down TLS (best-effort close_notify) while
+         * the SSL object is still valid (cleanup below frees it), then close. */
+        if (conn->ssl) ws_tls_conn_shutdown(conn->ssl);
+        close(fd);
+
         /* FIXED: Save pool_index before cleanup zeros it out */
         uint32_t pool_index = conn->pool_index;
         
@@ -316,10 +323,12 @@ int process_close_message(int fd, ws_close_code_t code, const char *reason, void
             ws_connection_set_state(conn, WS_STATE_CLOSED);
             WS_DEBUG_LOG("Connection fd=%d has pending references, deferred cleanup", fd);
         }
-        if (thread->free_connection_count < thread->max_connections) {
-            thread->free_connection_stack[thread->free_connection_count] = pool_index;
-            thread->free_connection_count++;
-        }
+        /* SECURITY (C-2): the slot is returned to the free stack ONLY in the
+         * last-reference branch above. The previous unconditional push here ran a
+         * SECOND time in that case — the same pool_index landed on the free stack
+         * twice, so two later accept()s aliased one ws_connection_t (shared fd /
+         * buffers / ref_count) -> use-after-free + double-free. In the deferred
+         * branch it pushed a slot still referenced by another thread. Removed. */
 
         /* Update active connection count */
         atomic_fetch_sub(&thread->active_connections, 1);
