@@ -448,20 +448,15 @@ void* ws_event_thread_worker(void *arg) {
             break;
         }
 
-        /* Slowloris reaper — at most once per second (epoll wakes every <= 100ms). */
-        time_t reap_now = time(NULL);
-        if (reap_now != thread->last_reap) { reap_stale_connections(thread); thread->last_reap = reap_now; }
-
         if (nfds == 0) {
-            /* Timeout - process pending messages and continue */
+            /* Timeout - process pending messages, then fall through to the reaper. */
             int processed = ws_mpsc_process_messages(thread->message_queue, &processor, 10);
             if (processed > 0) {
                 WS_DEBUG_LOG("Thread %u: Processed %d MPSC messages on timeout", thread->thread_id, processed);
             }
-            continue;
         }
 
-        /* Process events */
+        /* Process events (the loop body is a no-op when nfds == 0). */
         for (int i = 0; i < nfds; i++) {
             struct epoll_event *ev = &thread->events[i];
             int fd = ev->data.fd;
@@ -519,7 +514,19 @@ void* ws_event_thread_worker(void *arg) {
             }
         }
 
-        thread->last_activity_time = time(NULL);
+        if (nfds > 0) thread->last_activity_time = time(NULL);
+
+        /* Slowloris reaper — runs AFTER this batch's events are fully processed.
+         * The old position (before the loop) raced the event loop: a stalled fd
+         * that both timed out AND had a queued EPOLLIN/EPOLLHUP in the same batch
+         * was closed+freed by the reaper (which then ran first), then re-closed by
+         * the event loop via its now-stale event — a double close(2) that, once the
+         * acceptor thread
+         * reused that fd number, tore down an unrelated freshly-accepted connection.
+         * After the loop, a reaped fd has no remaining reference in events[], so the
+         * race cannot occur. Throttled to once/sec (epoll wakes every <= 100ms). */
+        time_t reap_now = time(NULL);
+        if (reap_now != thread->last_reap) { reap_stale_connections(thread); thread->last_reap = reap_now; }
     }
 
     thread->running = false;

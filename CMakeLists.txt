@@ -96,6 +96,10 @@ if(PORTICO_BUILD_TESTS)
         # Accept-time IP gate: a blacklisted peer is dropped before any handshake.
         add_test(NAME accept_gate
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/accept_test.sh $<TARGET_FILE:http_server>)
+        # Slowloris reaper: stalled pre-request connections are reaped without
+        # racing the event loop into a double-close / fd-reuse (finding H-7).
+        add_test(NAME reaper
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/reaper_test.sh $<TARGET_FILE:http_server>)
         # TLS: HTTPS + WSS against one TLS listener (needs openssl to mint a cert).
         find_program(OPENSSL_BIN openssl)
         if(PORTICO_TLS AND OPENSSL_BIN)

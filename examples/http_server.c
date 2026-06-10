@@ -81,6 +81,11 @@ int main(void) {
     cfg.enable_nodelay = true;
     cfg.backlog = 512;
 
+    /* Slowloris reaper deadline for pre-request (handshake) connections, seconds.
+     * Lowered by the reaper test to exercise stale-connection reaping quickly. */
+    const char *ht = getenv("HANDSHAKE_TIMEOUT");
+    if (ht && *ht) cfg.handshake_timeout = (uint32_t)atoi(ht);
+
     /* Optional TLS: set TLS_CERT + TLS_KEY (PEM paths) to serve HTTPS/WSS. */
     cfg.tls_cert_file = getenv("TLS_CERT");
     cfg.tls_key_file  = getenv("TLS_KEY");
