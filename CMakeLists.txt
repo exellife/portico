@@ -29,6 +29,18 @@ endif()
 
 find_package(Threads REQUIRED)
 
+# Optional TLS. portico builds plaintext-only if OpenSSL is absent; when present,
+# the listener can terminate TLS (cert/key paths in ws_config_t). The define +
+# linkage are PUBLIC so they propagate to consumers (e.g. pgforge).
+option(PORTICO_TLS "Enable TLS termination (requires OpenSSL)" ON)
+if(PORTICO_TLS)
+    find_package(OpenSSL)
+    if(NOT OpenSSL_FOUND)
+        message(STATUS "portico: OpenSSL not found — building without TLS")
+        set(PORTICO_TLS OFF)
+    endif()
+endif()
+
 # --- vendored third-party (kept warning-quiet) ---
 add_library(picohttpparser STATIC third_party/picohttpparser/picohttpparser.c)
 target_include_directories(picohttpparser PUBLIC third_party/picohttpparser)
@@ -49,6 +61,10 @@ target_include_directories(portico
 set_source_files_properties(${PORTICO_WS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_options(portico PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_link_libraries(portico PUBLIC Threads::Threads picohttpparser)
+if(PORTICO_TLS)
+    target_link_libraries(portico PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(portico PUBLIC PORTICO_TLS=1)
+endif()
 
 # --- examples ---
 if(PORTICO_BUILD_EXAMPLES)

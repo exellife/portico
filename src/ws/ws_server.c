@@ -8,6 +8,7 @@
 #include "internal/ws_internal.h"
 #include "internal/ws_connection.h"
 #include "internal/ws_utils.h"
+#include "internal/ws_tls.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -230,9 +231,35 @@ ws_server_t* ws_server_create_internal(const ws_config_t *config) {
         return NULL;
     }
 
-    WS_DEBUG_LOG("WebSocket server created on port %d with %d threads", 
+    /* Optional TLS context. When cert+key are configured we terminate TLS;
+     * fail closed (don't silently serve plaintext) if TLS isn't built in or the
+     * cert/key can't be loaded. */
+    if (config->tls_cert_file && config->tls_key_file) {
+        if (!ws_tls_available()) {
+            WS_ERROR_LOG("TLS requested but portico was built without OpenSSL");
+            close(server->listen_fd);
+            free(server->thread_loads);
+            free(server->threads);
+            ws_connection_hash_destroy(server->global_hash);
+            free(server);
+            return NULL;
+        }
+        server->tls_ctx = ws_tls_ctx_create(config->tls_cert_file, config->tls_key_file);
+        if (!server->tls_ctx) {
+            WS_ERROR_LOG("Failed to initialize TLS context");
+            close(server->listen_fd);
+            free(server->thread_loads);
+            free(server->threads);
+            ws_connection_hash_destroy(server->global_hash);
+            free(server);
+            return NULL;
+        }
+        WS_DEBUG_LOG("TLS enabled (cert=%s)", config->tls_cert_file);
+    }
+
+    WS_DEBUG_LOG("WebSocket server created on port %d with %d threads",
                  config->port, config->thread_count);
-    
+
     return (ws_server_t*)server;
 }
 
@@ -250,6 +277,12 @@ void ws_server_destroy_internal(ws_server_t *server) {
     if (internal->listen_fd >= 0) {
         close(internal->listen_fd);
         internal->listen_fd = -1;
+    }
+
+    /* Free the TLS context (after the listener is closed and threads stopped). */
+    if (internal->tls_ctx) {
+        ws_tls_ctx_free(internal->tls_ctx);
+        internal->tls_ctx = NULL;
     }
 
     /* Destroy global hash table */

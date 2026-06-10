@@ -100,6 +100,13 @@ typedef struct {
     bool enable_keepalive;            /* Enable TCP keepalive */
     bool enable_nodelay;              /* Enable TCP_NODELAY */
     uint32_t backlog;                 /* Listen backlog size */
+
+    /* TLS (optional). When BOTH tls_cert_file and tls_key_file are set, the
+     * listener terminates TLS (HTTPS/WSS); otherwise it serves plaintext.
+     * Requires portico built with OpenSSL (PORTICO_TLS) — if not, server start
+     * fails rather than silently downgrading to plaintext. PEM files on disk. */
+    const char *tls_cert_file;        /* PEM certificate chain (leaf first) */
+    const char *tls_key_file;         /* PEM private key */
 } ws_config_t;
 
 /* ============================================================================

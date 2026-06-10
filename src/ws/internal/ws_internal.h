@@ -220,6 +220,10 @@ typedef struct ws_server {
     
     /* Callbacks */
     ws_callbacks_t callbacks;      /* Application callbacks */
+
+    /* TLS server context (SSL_CTX*, kept as void* so this header needs no
+     * OpenSSL include). NULL = plaintext listener; shared read-only by conns. */
+    void *tls_ctx;
 } ws_server_internal_t;
 
 /* ============================================================================

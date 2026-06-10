@@ -16,6 +16,31 @@ Rough priority: **Confidence → Operability → Performance → Trading-grade**
 
 ---
 
+## 0. TLS termination — deploy without nginx  ← IN PROGRESS
+
+Make portico a genuinely self-contained binary: terminate TLS itself so a small
+deployment needs no nginx/proxy at all. Optional — plaintext stays the default,
+so proxy deployments (multi-instance LB, WAF, HTTP/2) still run as before. Link
+OpenSSL (already common in the process via libpq for pgforge); load cert/key from
+disk; secure defaults (TLS 1.2+, server cipher preference). Staged so the risky
+core-I/O surgery is isolated:
+
+- [x] **Stage 1 — foundation.** Optional OpenSSL linkage (`PORTICO_TLS`),
+      `ws_config_t.tls_cert_file/tls_key_file`, `SSL_CTX` lifecycle + cert/key
+      loading (`src/ws/ws_tls.c`, server-level only, no I/O change, fail-closed).
+- [ ] **Stage 2 — accept + handshake.** Per-conn `SSL*`; wrap on accept; drive
+      `SSL_accept` through epoll (`WANT_READ`/`WANT_WRITE`) before the WS/HTTP
+      handshake proceeds.
+- [ ] **Stage 3 — read/write integration.** Route `recv`→`SSL_read`,
+      `send`→`SSL_write` in the hardened paths; reconcile `WANT_READ`/`WANT_WRITE`
+      with the existing EPOLLOUT `out_buffer` backpressure. *The delicate part.*
+- [ ] **Stage 4 — close + tests.** `SSL_shutdown`/`SSL_free`; HTTPS + WSS
+      end-to-end + adversarial (handshake under load, partial records, slow peer).
+- [ ] Later: SIGHUP cert reload; ALPN; optional ACME (or document Caddy as the
+      zero-code alternative when "no nginx" just means "easier TLS").
+
+---
+
 ## 1. Confidence & maturity  ← highest value
 
 The single biggest unknown is not speed or features — it's how many bugs remain in
