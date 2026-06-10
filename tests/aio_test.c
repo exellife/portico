@@ -1,13 +1,12 @@
 /*
  * portico async file I/O — isolation unit test.
  *
- * No sockets, no event loop, no portico server: it drives portico_aio directly
- * against a real temp file and asserts (1) byte-correct reads incl. EOF / tail /
- * zero-length / error propagation, (2) the wakeup_fd actually signals and clears,
- * (3) completions fire in submission order, (4) argument validation, and
- * (5) the queue holds up under many submissions. This is the harness future
- * backends (threadpool, io_uring) get validated against — same asserts, same
- * oracle (the blocking backend).
+ * No sockets, no event loop, no portico server: drives portico_aio directly
+ * against a real temp file. The core correctness suite runs against BOTH the
+ * blocking backend (the oracle) and the threadpool backend and asserts identical
+ * results — differential testing. Threadpool-only cases cover concurrency and
+ * bounded-queue backpressure. Run under ThreadSanitizer to validate the worker /
+ * completion-queue synchronisation.
  */
 #include "portico_aio.h"
 
@@ -21,12 +20,15 @@
 
 static int g_ok = 0, g_fail = 0;
 static void chk(const char *name, int cond, const char *detail) {
-    printf("  %-5s %-44s %s\n", cond ? "ok" : "FAIL", name, detail ? detail : "");
+    printf("  %-5s %-46s %s\n", cond ? "ok" : "FAIL", name, detail ? detail : "");
     if (cond) g_ok++; else g_fail++;
 }
 
 /* Deterministic file content so any (offset, len) read is verifiable. */
 #define FILE_SIZE 4096
+static int  g_fd = -1;
+static char g_path[] = "/tmp/portico_aio_XXXXXX";
+
 static unsigned char pat(size_t i) { return (unsigned char)((i * 31u + 7u) & 0xff); }
 static int verify(const unsigned char *buf, off_t off, ssize_t n) {
     for (ssize_t i = 0; i < n; i++)
@@ -45,114 +47,136 @@ static int fd_readable(int fd) {
     return poll(&p, 1, 0) > 0 && (p.revents & POLLIN);
 }
 
-/* Submit one read and drain it; return the delivered result. */
-static ssize_t read_one(portico_aio_t *a, int fd, void *buf, size_t len, off_t off) {
-    cap_t c = { .res = -12345, .called = 0 };
-    int rc = portico_aio_pread(a, fd, buf, len, off, cb_capture, &c);
-    if (rc != 0) return rc;            /* synchronous rejection (-errno) */
-    portico_aio_drain(a);
-    return c.called == 1 ? c.res : -99999;
+/* Poll the wakeup_fd and drain until `want` completions have fired (or timeout).
+ * Works for both backends: blocking has them ready immediately, threadpool
+ * delivers them as workers finish. Returns how many fired. */
+static int await_completions(portico_aio_t *a, int want, int timeout_ms) {
+    int got = portico_aio_drain(a);
+    while (got < want) {
+        struct pollfd p = { .fd = portico_aio_wakeup_fd(a), .events = POLLIN };
+        if (poll(&p, 1, timeout_ms) <= 0) break;   /* timeout / error */
+        got += portico_aio_drain(a);
+    }
+    return got;
+}
+
+/* One submitted read, awaited; fills *out. Returns the submit rc (0 = accepted). */
+static int do_read(portico_aio_t *a, void *buf, size_t len, off_t off, cap_t *out) {
+    out->res = -999999; out->called = 0;
+    int rc = portico_aio_pread(a, g_fd, buf, len, off, cb_capture, out);
+    if (rc == 0) await_completions(a, 1, 5000);
+    return rc;
+}
+
+/* The backend-agnostic correctness suite — must pass identically for every backend. */
+static void correctness_suite(portico_aio_backend_t backend, const char *label) {
+    char nm[80];
+    portico_aio_cfg_t cfg = { .backend = backend, .threads = 4 };
+    portico_aio_t *a = portico_aio_create(&cfg);
+    snprintf(nm, sizeof nm, "[%s] create", label);
+    chk(nm, a != NULL, a ? "" : strerror(errno));
+    if (!a) return;
+
+    unsigned char buf[FILE_SIZE];
+    cap_t c;
+
+    do_read(a, buf, FILE_SIZE, 0, &c);
+    snprintf(nm, sizeof nm, "[%s] full read", label);
+    chk(nm, c.called == 1 && c.res == FILE_SIZE && verify(buf, 0, c.res), NULL);
+
+    memset(buf, 0, sizeof buf);
+    do_read(a, buf, 100, 1000, &c);
+    snprintf(nm, sizeof nm, "[%s] offset read", label);
+    chk(nm, c.called == 1 && c.res == 100 && verify(buf, 1000, c.res), NULL);
+
+    memset(buf, 0, sizeof buf);
+    do_read(a, buf, 100, FILE_SIZE - 3, &c);
+    snprintf(nm, sizeof nm, "[%s] tail short read (3)", label);
+    chk(nm, c.called == 1 && c.res == 3 && verify(buf, FILE_SIZE - 3, c.res), NULL);
+
+    do_read(a, buf, 64, FILE_SIZE + 100, &c);
+    snprintf(nm, sizeof nm, "[%s] read past EOF -> 0", label);
+    chk(nm, c.called == 1 && c.res == 0, NULL);
+
+    do_read(a, buf, 0, 0, &c);
+    snprintf(nm, sizeof nm, "[%s] zero-length -> 0", label);
+    chk(nm, c.called == 1 && c.res == 0, NULL);
+
+    {
+        int wfd = open(g_path, O_WRONLY);
+        cap_t e; e.res = 0; e.called = 0;
+        int rc = portico_aio_pread(a, wfd, buf, 16, 0, cb_capture, &e);
+        if (rc == 0) await_completions(a, 1, 5000);
+        snprintf(nm, sizeof nm, "[%s] write-only fd -> -EBADF", label);
+        chk(nm, e.called == 1 && e.res == -EBADF, NULL);
+        if (wfd >= 0) close(wfd);
+    }
+
+    portico_aio_destroy(a);
 }
 
 int main(void) {
     printf("== portico aio isolation test ==\n");
 
-    /* ---- fixture: a temp file of known content ---- */
-    char path[] = "/tmp/portico_aio_XXXXXX";
-    int fd = mkstemp(path);
-    if (fd < 0) { perror("mkstemp"); return 2; }
+    g_fd = mkstemp(g_path);
+    if (g_fd < 0) { perror("mkstemp"); return 2; }
     unsigned char src[FILE_SIZE];
     for (size_t i = 0; i < FILE_SIZE; i++) src[i] = pat(i);
-    if (write(fd, src, FILE_SIZE) != FILE_SIZE) { perror("write"); return 2; }
+    if (write(g_fd, src, FILE_SIZE) != FILE_SIZE) { perror("write"); return 2; }
 
-    portico_aio_t *a = portico_aio_create(NULL);   /* defaults → blocking */
-    chk("create (default backend)", a != NULL, a ? "" : strerror(errno));
-    if (!a) return 2;
-    chk("wakeup_fd is valid", portico_aio_wakeup_fd(a) >= 0, NULL);
+    /* ---- differential: same suite, both backends ---- */
+    correctness_suite(PORTICO_AIO_BLOCKING,   "blocking");
+    correctness_suite(PORTICO_AIO_THREADPOOL, "threadpool");
 
     unsigned char buf[FILE_SIZE];
 
-    /* full read */
-    memset(buf, 0, sizeof buf);
-    ssize_t n = read_one(a, fd, buf, FILE_SIZE, 0);
-    chk("full read returns size", n == FILE_SIZE, NULL);
-    chk("full read content correct", n == FILE_SIZE && verify(buf, 0, n), NULL);
-
-    /* mid-file read */
-    memset(buf, 0, sizeof buf);
-    n = read_one(a, fd, buf, 100, 1000);
-    chk("offset read length", n == 100, NULL);
-    chk("offset read content correct", n == 100 && verify(buf, 1000, n), NULL);
-
-    /* tail: requested length runs past EOF → short read */
-    memset(buf, 0, sizeof buf);
-    n = read_one(a, fd, buf, 100, FILE_SIZE - 3);
-    chk("tail read is short (3 bytes)", n == 3, NULL);
-    chk("tail read content correct", n == 3 && verify(buf, FILE_SIZE - 3, n), NULL);
-
-    /* entirely past EOF → 0 bytes */
-    n = read_one(a, fd, buf, 64, FILE_SIZE + 100);
-    chk("read past EOF returns 0", n == 0, NULL);
-
-    /* zero-length read → 0 bytes */
-    n = read_one(a, fd, buf, 0, 0);
-    chk("zero-length read returns 0", n == 0, NULL);
-
-    /* error propagation: a write-only fd → pread EBADF, delivered as -errno */
+    /* ---- blocking-only invariants (ordering + immediate readiness) ---- */
     {
-        int wfd = open(path, O_WRONLY);
-        chk("open O_WRONLY", wfd >= 0, NULL);
-        char d[32];
-        n = read_one(a, wfd, buf, 16, 0);
-        snprintf(d, sizeof d, "got %zd", n);
-        chk("read on write-only fd -> -EBADF", n == -EBADF, d);
-        if (wfd >= 0) close(wfd);
-    }
-
-    /* wakeup_fd: signalled by a submit, cleared by drain */
-    {
+        portico_aio_t *a = portico_aio_create(NULL);   /* blocking */
+        chk("[blocking] wakeup quiet before submit", !fd_readable(portico_aio_wakeup_fd(a)), NULL);
         cap_t c = { .res = 0, .called = 0 };
-        chk("wakeup_fd quiet before submit", !fd_readable(portico_aio_wakeup_fd(a)), NULL);
-        portico_aio_pread(a, fd, buf, 32, 0, cb_capture, &c);
-        chk("wakeup_fd readable after submit", fd_readable(portico_aio_wakeup_fd(a)), NULL);
+        portico_aio_pread(a, g_fd, buf, 32, 0, cb_capture, &c);
+        chk("[blocking] wakeup readable after submit", fd_readable(portico_aio_wakeup_fd(a)), NULL);
         int fired = portico_aio_drain(a);
-        chk("drain fired the completion", fired == 1 && c.called == 1, NULL);
-        chk("wakeup_fd quiet after drain", !fd_readable(portico_aio_wakeup_fd(a)), NULL);
-    }
+        chk("[blocking] drain fires + clears wakeup",
+            fired == 1 && c.called == 1 && !fd_readable(portico_aio_wakeup_fd(a)), NULL);
 
-    /* completions fire in submission order */
-    {
         int ids[3] = { 10, 20, 30 };
         g_norder = 0;
-        for (int i = 0; i < 3; i++)
-            portico_aio_pread(a, fd, buf, 8, i * 8, cb_order, &ids[i]);
-        int fired = portico_aio_drain(a);
-        chk("3 submissions all fired", fired == 3, NULL);
-        chk("completions in submission order",
+        for (int i = 0; i < 3; i++) portico_aio_pread(a, g_fd, buf, 8, i * 8, cb_order, &ids[i]);
+        portico_aio_drain(a);
+        chk("[blocking] completions in submission order",
             g_norder == 3 && g_order[0] == 10 && g_order[1] == 20 && g_order[2] == 30, NULL);
+        portico_aio_destroy(a);
     }
 
-    /* argument validation (synchronous -errno, no completion) */
-    chk("NULL buf + nonzero len -> -EFAULT",
-        portico_aio_pread(a, fd, NULL, 16, 0, cb_capture, NULL) == -EFAULT, NULL);
-    chk("negative offset -> -EINVAL",
-        portico_aio_pread(a, fd, buf, 16, -1, cb_capture, NULL) == -EINVAL, NULL);
-    chk("NULL callback -> -EINVAL",
-        portico_aio_pread(a, fd, buf, 16, 0, NULL, NULL) == -EINVAL, NULL);
-    chk("negative fd -> -EINVAL",
-        portico_aio_pread(a, -1, buf, 16, 0, cb_capture, NULL) == -EINVAL, NULL);
+    /* ---- frontend argument validation (backend-agnostic; synchronous -errno) ---- */
+    {
+        portico_aio_t *a = portico_aio_create(NULL);
+        chk("NULL buf + nonzero len -> -EFAULT",
+            portico_aio_pread(a, g_fd, NULL, 16, 0, cb_capture, NULL) == -EFAULT, NULL);
+        chk("negative offset -> -EINVAL",
+            portico_aio_pread(a, g_fd, buf, 16, -1, cb_capture, NULL) == -EINVAL, NULL);
+        chk("NULL callback -> -EINVAL",
+            portico_aio_pread(a, g_fd, buf, 16, 0, NULL, NULL) == -EINVAL, NULL);
+        chk("negative fd -> -EINVAL",
+            portico_aio_pread(a, -1, buf, 16, 0, cb_capture, NULL) == -EINVAL, NULL);
+        portico_aio_destroy(a);
+    }
 
-    /* many submissions before a single drain: queue integrity under volume */
+    /* ---- threadpool: many concurrent ops, all correct (order-independent) ---- */
     {
         enum { N = 1000, LEN = 64 };
+        portico_aio_cfg_t cfg = { .backend = PORTICO_AIO_THREADPOOL, .threads = 8 };
+        portico_aio_t *a = portico_aio_create(&cfg);
         static cap_t caps[N];
         static unsigned char bufs[N][LEN];
         for (int i = 0; i < N; i++) {
             caps[i].res = -1; caps[i].called = 0;
             off_t off = (off_t)((i % 60) * LEN);
-            portico_aio_pread(a, fd, bufs[i], LEN, off, cb_capture, &caps[i]);
+            portico_aio_pread(a, g_fd, bufs[i], LEN, off, cb_capture, &caps[i]);
         }
-        int fired = portico_aio_drain(a);
+        int fired = await_completions(a, N, 10000);
         int all = (fired == N);
         for (int i = 0; i < N && all; i++) {
             off_t off = (off_t)((i % 60) * LEN);
@@ -160,21 +184,63 @@ int main(void) {
             if (caps[i].called != 1 || caps[i].res != want || !verify(bufs[i], off, caps[i].res))
                 all = 0;
         }
-        char d[32]; snprintf(d, sizeof d, "fired %d", fired);
-        chk("1000 submissions all correct", all, d);
+        char d[40]; snprintf(d, sizeof d, "fired %d/%d", fired, (int)N);
+        chk("[threadpool] 1000 concurrent ops correct", all, d);
+        portico_aio_destroy(a);
+    }
+
+    /* ---- threadpool: bounded queue backpressures with -EAGAIN, retries complete ---- */
+    {
+        enum { N = 300, LEN = 64 };
+        portico_aio_cfg_t cfg = { .backend = PORTICO_AIO_THREADPOOL, .threads = 2, .queue_depth = 8 };
+        portico_aio_t *a = portico_aio_create(&cfg);
+        static cap_t caps[N];
+        static unsigned char bufs[N][LEN];
+        int eagain = 0, fired_total = 0, submit_err = 0;
+        for (int i = 0; i < N; i++) {
+            caps[i].res = -1; caps[i].called = 0;
+            off_t off = (off_t)((i % 60) * LEN);
+            for (;;) {
+                int rc = portico_aio_pread(a, g_fd, bufs[i], LEN, off, cb_capture, &caps[i]);
+                if (rc == 0) break;
+                if (rc == -EAGAIN) {                 /* queue full: drain some, retry */
+                    eagain++;
+                    struct pollfd p = { .fd = portico_aio_wakeup_fd(a), .events = POLLIN };
+                    poll(&p, 1, 5000);
+                    fired_total += portico_aio_drain(a);
+                    continue;
+                }
+                submit_err = 1; break;               /* unexpected */
+            }
+        }
+        while (fired_total < N) {
+            struct pollfd p = { .fd = portico_aio_wakeup_fd(a), .events = POLLIN };
+            if (poll(&p, 1, 10000) <= 0) break;
+            fired_total += portico_aio_drain(a);
+        }
+        int all = (!submit_err && fired_total == N);
+        for (int i = 0; i < N && all; i++) {
+            off_t off = (off_t)((i % 60) * LEN);
+            ssize_t want = (off + LEN <= FILE_SIZE) ? LEN : (FILE_SIZE - off);
+            if (caps[i].called != 1 || caps[i].res != want || !verify(bufs[i], off, caps[i].res))
+                all = 0;
+        }
+        char d[48]; snprintf(d, sizeof d, "fired %d, %d EAGAIN retries", fired_total, eagain);
+        chk("[threadpool] backpressure: all complete via retry", all, d);
+        portico_aio_destroy(a);
     }
 
     /* reserved backend reports ENOSYS rather than misbehaving */
     {
         portico_aio_cfg_t cfg = { .backend = PORTICO_AIO_IOURING };
+        errno = 0;
         portico_aio_t *b = portico_aio_create(&cfg);
         chk("unimplemented backend -> NULL/ENOSYS", b == NULL && errno == ENOSYS, NULL);
         if (b) portico_aio_destroy(b);
     }
 
-    portico_aio_destroy(a);
-    close(fd);
-    unlink(path);
+    close(g_fd);
+    unlink(g_path);
 
     printf("\n%s  (%d ok, %d failed)\n", g_fail ? "FAIL" : "PASS", g_ok, g_fail);
     return g_fail ? 1 : 0;

@@ -8,6 +8,7 @@
 
 #include "portico_aio.h"
 #include <pthread.h>
+#include <stdatomic.h>
 
 /* One finished op, waiting for its callback to fire on the consumer thread. */
 typedef struct portico_aio_completion {
@@ -34,6 +35,7 @@ typedef struct {
 
 struct portico_aio {
     int                       wakeup_fd;   /* eventfd; consumer adds to its epoll */
+    atomic_int                notified;    /* 1 = an unconsumed wakeup is pending (coalesces eventfd writes) */
     pthread_mutex_t           lock;        /* guards head/tail */
     portico_aio_completion_t *head, *tail; /* FIFO completion queue */
     const portico_aio_ops_t  *ops;         /* backend vtable */
@@ -46,7 +48,8 @@ struct portico_aio {
 void portico_aio_post_completion(portico_aio_t *a, portico_aio_cb_t cb,
                                  void *user, ssize_t res);
 
-/* Backend constructor: wires a->ops and a->backend, returns 0 or -errno. */
+/* Backend constructors: wire a->ops and a->backend, return 0 or -errno. */
 int  portico_aio_blocking_init(portico_aio_t *a);
+int  portico_aio_threadpool_init(portico_aio_t *a);
 
 #endif /* PORTICO_AIO_INTERNAL_H */

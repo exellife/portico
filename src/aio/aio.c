@@ -24,8 +24,9 @@ portico_aio_t *portico_aio_create(const portico_aio_cfg_t *cfg) {
 
     int rc;
     switch (a->cfg.backend) {
-        case PORTICO_AIO_BLOCKING: rc = portico_aio_blocking_init(a); break;
-        default:                   rc = -ENOSYS; break;   /* threadpool/iouring: not yet */
+        case PORTICO_AIO_BLOCKING:   rc = portico_aio_blocking_init(a);   break;
+        case PORTICO_AIO_THREADPOOL: rc = portico_aio_threadpool_init(a); break;
+        default:                     rc = -ENOSYS; break;   /* iouring: not yet */
     }
     if (rc != 0) {
         pthread_mutex_destroy(&a->lock);
@@ -70,9 +71,17 @@ void portico_aio_post_completion(portico_aio_t *a, portico_aio_cb_t cb,
     a->tail = c;
     pthread_mutex_unlock(&a->lock);
 
-    uint64_t one = 1;
-    ssize_t w = write(a->wakeup_fd, &one, sizeof one);
-    (void)w;   /* level-triggered: a missed bump is recovered on the next signal */
+    /* Coalesce wakeups: only the first completion since the last drain actually
+     * writes the eventfd. A burst of N completions costs one notify syscall, not
+     * N. The enqueue above happens-before this exchange, and drain() resets
+     * `notified` BEFORE it pops, so any completion drain misses is guaranteed to
+     * either be popped now or to leave `notified == 0` for the next poster to
+     * re-signal — no lost wakeups. */
+    if (atomic_exchange_explicit(&a->notified, 1, memory_order_acq_rel) == 0) {
+        uint64_t one = 1;
+        ssize_t w = write(a->wakeup_fd, &one, sizeof one);
+        (void)w;   /* level-triggered: a missed bump is recovered on the next signal */
+    }
 }
 
 int portico_aio_pread(portico_aio_t *a, int fd, void *buf, size_t len, off_t off,
@@ -84,6 +93,10 @@ int portico_aio_pread(portico_aio_t *a, int fd, void *buf, size_t len, off_t off
 
 int portico_aio_drain(portico_aio_t *a) {
     if (!a) return 0;
+
+    /* Reset the coalescing flag BEFORE draining the queue, so any completion that
+     * lands while we drain re-arms the eventfd (see post_completion). */
+    atomic_store_explicit(&a->notified, 0, memory_order_release);
 
     /* Clear the eventfd counter (EFD_NONBLOCK → EAGAIN once empty). */
     uint64_t cnt;

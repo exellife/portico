@@ -151,8 +151,14 @@ the foundation, built first as a standalone, isolation-tested library.
       linked into `portico` — depends only on libc + pthreads, tested in isolation
       (24 asserts, ASan/UBSan clean: correctness, EOF/tail/zero-len, `-errno`
       propagation, wakeup signalling, ordering, arg validation, 1000-op queue).
-- [ ] **Threadpool backend** — N workers + bounded queue; differential-test vs the
-      blocking oracle; TSan-clean. The portable high-throughput path.
+- [x] **Threadpool backend** (`src/aio/aio_threadpool.c`) — N workers pull reads off
+      a bounded queue (`-EAGAIN` backpressure when full) and run pread() off the
+      event thread, posting via a **coalesced** wakeup (a burst of completions costs
+      one eventfd write, not one each — the main lever closing the gap to io_uring).
+      Differential-tested against the blocking oracle (identical results), plus 1000
+      concurrent ops + backpressure-retry. Clean under TSan and ASan/UBSan. This is
+      the portable, non-stalling path and the runtime fallback when io_uring is
+      absent (old kernel / seccomp).
 - [ ] **io_uring backend** — Linux fast path; same differential suite. Keep its ring
       separate from the network epoll (joined by the eventfd) for portability.
 - [ ] **Offload `open()`/`stat()` too**, not just `read()` (a cold dentry blocks).
