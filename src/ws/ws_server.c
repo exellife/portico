@@ -685,6 +685,15 @@ int portico_client_ip(ws_server_t *server, int fd, char *out, size_t out_len) {
     return 0;
 }
 
+long portico_active_connections(ws_server_t *server) {
+    if (!server) return 0;
+    ws_server_internal_t *internal = (ws_server_internal_t*)server;
+    long total = 0;
+    for (uint32_t i = 0; i < internal->thread_count; i++)
+        total += (long)atomic_load(&internal->threads[i].active_connections);
+    return total;
+}
+
 int ws_set_connection_user_data_internal(ws_server_t *server, int fd, void *user_data) {
     if (!server || fd < 0) return WS_ERROR_INVALID_ARGS;
 

@@ -319,6 +319,13 @@ ws_state_t ws_get_connection_state(ws_server_t *server, int fd);
 int portico_client_ip(ws_server_t *server, int fd, char *out, size_t out_len);
 
 /**
+ * Current number of active transport connections across all event threads
+ * (HTTP keep-alive + WebSocket — both share the accept path). For metrics /
+ * capacity monitoring. Returns 0 if the server is NULL.
+ */
+long portico_active_connections(ws_server_t *server);
+
+/**
  * Set user data for a connection.
  * 
  * @param server Server instance
