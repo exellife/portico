@@ -187,8 +187,23 @@ the foundation, built first as a standalone, isolation-tested library.
       io_uring-then-threadpool default. Tested e2e (bytes, types, 404/403,
       traversal + symlink safety, 250 KB byte-exact, keep-alive resume) across all
       three backends; ASan-clean; portico suite 11/11.
-      Follow-ups: streaming for files > 1 MiB (today's single-read cap), HTTP Range,
-      ETag/Last-Modified + conditional GET, directory index, prefix stripping.
+- [x] **Streaming large files** (src/http/connection.c) — files over 256 KB are sent
+      chunk by chunk (read a chunk off-thread → send → on socket drain, read the
+      next) instead of buffered whole. Two-sided backpressure: a read in flight is
+      the disk wait, a non-empty out-buffer is the socket wait (EPOLLOUT resumes via
+      stream_advance). Memory stays bounded to one chunk + the out-buffer regardless
+      of file size (tested to 50 MB). Content-Length known up front (from fstat), so
+      a normal response, no chunked transfer-encoding. Lifecycle: while a chunk read
+      is in flight the completion owns the stream context; otherwise the detaching
+      function frees it; a mid-stream connection close is handled by
+      portico_http_stream_abort (called from ws_connection_cleanup) + the slot-reuse
+      generation guard. A progressing stream bumps last_activity so the idle reaper
+      won't kill it; a stalled reader still times out. Tested: 1.5 MB byte-exact,
+      keep-alive after a streamed response, mid-stream client disconnect survival,
+      16 concurrent streams — across all 3 backends, ASan-clean, suite 11/11.
+      Follow-ups: HTTP Range (seeking — the key video feature, and "streaming with a
+      start offset" given this foundation), ETag/Last-Modified + conditional GET,
+      directory index, prefix stripping, read-ahead (double-buffer) for throughput.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 

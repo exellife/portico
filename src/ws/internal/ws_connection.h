@@ -100,6 +100,8 @@ struct ws_connection {
     uint8_t http_async_inflight;   /* A static-file read is in flight: buffer input
                                     * but don't process requests until it completes
                                     * (preserves HTTP response ordering). */
+    void   *file_stream;           /* In-progress streamed file response (http_stream_t*),
+                                    * or NULL. Freed via portico_http_stream_abort on close. */
 
     /* User data pointer */
     void *user_data;               /* Application-specific data */

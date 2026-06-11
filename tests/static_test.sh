@@ -18,6 +18,7 @@ printf '<!doctype html><h1>hi</h1>'  > "$ROOT/index.html"
 mkdir -p "$ROOT/assets"
 printf 'body{color:red}'             > "$ROOT/assets/site.css"
 head -c 250000 /dev/urandom          > "$ROOT/big.bin"
+head -c 1500000 /dev/urandom         > "$ROOT/stream.bin"   # > 256KB → streamed (chunked)
 # A symlink pointing outside the docroot must NOT be served.
 ln -s /etc/passwd "$ROOT/escape.txt"
 
@@ -74,6 +75,12 @@ s,_,_,_ = get("/../../../../etc/passwd");           chk("plain traversal blocked
 # symlink escaping the docroot must not be served
 s,_,_,_ = get("/escape.txt");                       chk("symlink escape -> 403", s==403, f"status={s}")
 
+# streamed file (> 256KB → chunked read↔send path), byte-exact
+s,b,_,_ = get("/stream.bin")
+want = open(ROOT+"/stream.bin","rb").read()
+chk("1.5MB streamed byte-exact",
+    s==200 and hashlib.sha256(b).hexdigest()==hashlib.sha256(want).hexdigest(), f"status={s} len={len(b)}")
+
 # keep-alive: 3 requests on ONE connection — exercises resume-after-completion
 c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
 allok = True; ka_seen = True
@@ -83,6 +90,36 @@ for i in range(3):
     if ka and ka.lower()=="close": ka_seen=False
 c.close()
 chk("keep-alive: 3 sequential on one conn", allok and ka_seen)
+
+# keep-alive across a STREAMED response then a small one on one connection
+c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+s1,b1,_,_ = get("/stream.bin", conn=c)
+s2,b2,_,_ = get("/hello.txt", conn=c)
+c.close()
+chk("keep-alive after a streamed response",
+    s1==200 and b1==want and s2==200 and b2==open(ROOT+"/hello.txt","rb").read())
+
+# mid-stream client disconnect: start a big download, read a little, close abruptly.
+# The server must release the in-flight stream cleanly and keep serving.
+import socket
+sk = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+sk.sendall(b"GET /stream.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+_ = sk.recv(4096)            # headers + a little body
+sk.close()                   # abrupt close while the server is mid-stream
+s,b,_,_ = get("/hello.txt")  # a fresh request still works → server survived
+chk("survives mid-stream client disconnect", s==200 and b==open(ROOT+"/hello.txt","rb").read(), f"status={s}")
+
+# concurrent streams: many simultaneous streamed downloads share the per-thread
+# aio + EPOLLOUT coordination — all must come back byte-exact.
+import threading
+results = []
+def worker():
+    st, bb, _, _ = get("/stream.bin")
+    results.append(st == 200 and bb == want)
+ths = [threading.Thread(target=worker) for _ in range(16)]
+for t in ths: t.start()
+for t in ths: t.join()
+chk("16 concurrent streams byte-exact", len(results) == 16 and all(results), f"{sum(results)}/16")
 
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)

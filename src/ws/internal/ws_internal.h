@@ -497,6 +497,10 @@ int portico_http_event(ws_event_thread_t *thread, ws_connection_t *conn, ws_serv
  * 0 to keep the connection, -1 if it was closed (fatal write error). */
 int portico_conn_on_writable(ws_event_thread_t *thread, ws_connection_t *conn);
 
+/* Release an in-progress streamed file response when a connection is torn down
+ * (called from ws_connection_cleanup before the slot is wiped). */
+void portico_http_stream_abort(ws_connection_t *conn);
+
 /* Queue bytes for sending on a connection with EPOLLOUT backpressure (buffers
  * what the socket can't take, never blocks). Shared by HTTP responses and WS
  * frame sends. Returns 0 ok, -1 on fatal error / backpressure-cap overflow. */

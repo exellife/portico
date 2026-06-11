@@ -254,6 +254,10 @@ void ws_connection_init(ws_connection_t *conn, int fd, uint16_t thread_id, uint1
 void ws_connection_cleanup(ws_connection_t *conn) {
     if (!conn) return;
 
+    /* Release any in-progress streamed file response BEFORE the wipe below (which
+     * would otherwise leak the stream context + its open file fd). */
+    if (conn->file_stream) portico_http_stream_abort(conn);
+
     /* Free the TLS object (BIO_NOCLOSE, so this never touches the fd). */
     if (conn->ssl) {
         ws_tls_conn_free(conn->ssl);

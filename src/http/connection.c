@@ -32,6 +32,23 @@ extern void close_connection(ws_event_thread_t *thread, int fd);
 static int process_http_buffer(ws_event_thread_t *thread, ws_connection_t *conn,
                                ws_server_internal_t *server);
 
+/* Streamed (chunked) file response context; the machinery is in the static-file
+ * section below. Declared up here so the writable/cleanup hooks can reference it. */
+typedef struct http_stream {
+    ws_event_thread_t *thread;
+    ws_connection_t   *conn;
+    uint32_t           generation;   /* conn's generation at submit (slot-reuse guard) */
+    int                file_fd;
+    uint8_t           *buf;          /* one chunk (PORTICO_STREAM_CHUNK) */
+    long long          offset;       /* next file offset to read */
+    long long          size;         /* total file size (== Content-Length) */
+    int                keep_alive;
+    int                reading;       /* an aio read is in flight for this stream */
+} http_stream_t;
+static void stream_free(http_stream_t *s);
+static int  stream_advance(http_stream_t *s);
+static void stream_chunk_complete(void *user, ssize_t nread);
+
 /* Connection I/O chokepoints: go through the TLS layer when this connection is
  * encrypted, else raw non-blocking socket I/O. Both keep recv()/send() semantics
  * (>0 bytes, 0 = peer closed, -1 with errno EAGAIN on would-block), so the
@@ -193,7 +210,21 @@ int portico_conn_on_writable(ws_event_thread_t *thread, ws_connection_t *conn) {
     if (conn_out_drain(conn) < 0) return -1;          /* fatal write error */
     if (conn->out_used > conn->out_sent) return 0;    /* still backlogged, stay armed */
     conn_set_epollout(thread, conn->fd, 0);           /* drained: disarm EPOLLOUT */
+    /* Mid-stream and the socket just drained → pull the next file chunk. */
+    if (conn->file_stream)
+        return stream_advance((http_stream_t *)conn->file_stream);
     return conn->out_close_when_drained ? -1 : 0;     /* finish deferred close */
+}
+
+/* Abort an in-progress streamed file response (called from ws_connection_cleanup
+ * before the connection slot is wiped). If a read is in flight, its completion
+ * owns the context and will free it (its slot-reuse guard now fails); otherwise
+ * free it here. Either way the fd/buffer are released exactly once. */
+void portico_http_stream_abort(ws_connection_t *conn) {
+    http_stream_t *s = (http_stream_t *)conn->file_stream;
+    if (!s) return;
+    conn->file_stream = NULL;
+    if (!s->reading) stream_free(s);   /* no in-flight read: free now */
 }
 
 /* True iff `s` (length n) is a syntactically valid IPv4 or IPv6 address. */
@@ -241,9 +272,14 @@ static void resolve_client_ip(const ws_connection_t *conn, const ws_server_inter
 
 /* ---- static file serving ------------------------------------------------- */
 
-/* MVP cap: a file is served as ONE async read into one buffer handed to the send
- * path, so bound it well under the out-buffer cap. Larger files need streaming. */
-#define PORTICO_FILE_MAX (1024 * 1024)
+/* Files larger than this are STREAMED (chunked read↔send) instead of read whole
+ * into one buffer; at or below it, the simple single-read path is used. */
+#define PORTICO_STREAM_CHUNK  (256 * 1024)
+/* Single-read path cap (small files, or the no-aio fallback): bounded well under
+ * the out-buffer cap. Bigger files require the async streaming path. */
+#define PORTICO_SINGLE_MAX    (4 * 1024 * 1024)
+/* Sanity ceiling on any served file. */
+#define PORTICO_FILE_MAX      (2LL * 1024 * 1024 * 1024)
 
 /* Content-Type from a path's extension; a small common set, octet-stream default. */
 static const char *content_type_for(const char *path) {
@@ -391,6 +427,157 @@ static void file_read_complete(void *user, ssize_t nread) {
     free(ctx);
 }
 
+/* ---- streamed (chunked) file response, for files over PORTICO_STREAM_CHUNK ----
+ *
+ * The body is sent chunk by chunk: read a chunk off-thread → send it → when the
+ * socket has drained, read the next. Two-sided backpressure: a read in flight is
+ * the disk wait; out_buffer non-empty is the socket wait (EPOLLOUT resumes us).
+ * Memory stays bounded to one chunk + the out-buffer regardless of file size.
+ *
+ * Ownership of the heap stream context `s` (also referenced by conn->file_stream):
+ *  - while s->reading, the in-flight aio read owns s; its completion frees it.
+ *  - otherwise the function that detaches (clears conn->file_stream) frees s.
+ *  - on a mid-stream connection close, portico_http_stream_abort handles it. */
+static void stream_free(http_stream_t *s) {
+    close(s->file_fd);
+    free(s->buf);
+    free(s);
+}
+
+/* Truncate-and-close: a read or send failed mid-stream (headers already went out,
+ * so the status can't change). Detach + free s; the caller closes the connection. */
+static int stream_fail(http_stream_t *s) {
+    s->conn->file_stream = NULL;
+    s->conn->http_async_inflight = 0;
+    stream_free(s);
+    return -1;
+}
+
+/* All bytes sent/queued. Detach + free s, then resume (keep-alive → pipelined,
+ * else arrange close). Returns 0 to keep the connection, -1 to close it now. */
+static int stream_finish(http_stream_t *s) {
+    ws_event_thread_t *thread = s->thread;
+    ws_connection_t  *conn = s->conn;
+    int keep_alive = s->keep_alive;
+    conn->file_stream = NULL;
+    conn->http_async_inflight = 0;
+    stream_free(s);
+    if (keep_alive) {
+        ws_server_internal_t *server = (ws_server_internal_t *)thread->server_instance;
+        return process_http_buffer(thread, conn, server);
+    }
+    if (conn->out_used > conn->out_sent) { conn->out_close_when_drained = 1; return 0; }
+    return -1;
+}
+
+/* Pump the stream: submit the next chunk read, or (socket backed up) wait for
+ * EPOLLOUT, or finish. Returns 0 to keep the connection, -1 to close it now.
+ * Never closes directly — the caller (completion or EPOLLOUT handler) does. */
+static int stream_advance(http_stream_t *s) {
+    ws_connection_t *conn = s->conn;
+    if (s->reading) return 0;                              /* a read is already in flight */
+    for (;;) {
+        if (conn->out_used > conn->out_sent) return 0;     /* socket backed up: wait EPOLLOUT */
+        if (s->offset >= s->size) return stream_finish(s); /* done */
+
+        size_t want = (size_t)(s->size - s->offset);
+        if (want > PORTICO_STREAM_CHUNK) want = PORTICO_STREAM_CHUNK;
+
+        if (s->thread->aio) {
+            s->reading = 1;
+            if (portico_aio_pread(s->thread->aio, s->file_fd, s->buf, want, s->offset,
+                                  stream_chunk_complete, s) == 0)
+                return 0;                                  /* in flight — completion resumes */
+            s->reading = 0;                                /* submit refused → read inline below */
+        }
+        ssize_t n;
+        do { n = pread(s->file_fd, s->buf, want, s->offset); } while (n < 0 && errno == EINTR);
+        if (n <= 0) return stream_fail(s);
+        if (portico_conn_send(s->thread, conn, s->buf, (size_t)n) != 0) return stream_fail(s);
+        s->offset += n;
+        /* loop: try the next chunk (or hit the EPOLLOUT wait at the top) */
+    }
+}
+
+/* aio chunk-read completion (runs on the owning event thread, in portico_aio_drain). */
+static void stream_chunk_complete(void *user, ssize_t nread) {
+    http_stream_t *s = user;
+    ws_connection_t *conn = s->conn;
+    s->reading = 0;
+
+    /* Slot-reuse guard: connection closed/recycled mid-stream → drop (the state
+     * is wiped to non-HTTP on cleanup, or the generation differs after reuse). */
+    if (!(conn->generation == s->generation && conn->state == WS_STATE_HTTP &&
+          conn->file_stream == s)) {
+        stream_free(s);
+        return;
+    }
+    ws_event_thread_t *thread = s->thread;
+    conn->last_activity = (uint32_t)time(NULL);   /* progress: don't reap an active stream */
+
+    int rc;
+    if (nread <= 0) {
+        rc = stream_fail(s);                       /* short/failed read mid-stream */
+    } else if (portico_conn_send(thread, conn, s->buf, (size_t)nread) != 0) {
+        rc = stream_fail(s);
+    } else {
+        s->offset += nread;
+        rc = (s->offset >= s->size) ? stream_finish(s) : stream_advance(s);
+    }
+    /* s is freed by now if rc < 0 (or if it finished); only touch `conn`. */
+    if (rc < 0) {
+        if (conn->out_used > conn->out_sent) conn->out_close_when_drained = 1;
+        else close_connection(thread, (int)conn->fd);
+    }
+}
+
+/* Start streaming res->file_fd: send headers (Content-Length known up front),
+ * park the connection, submit the first chunk read. Returns -1 to close now, 0 to
+ * keep the connection parked (completions/EPOLLOUT drive the rest). */
+static int stream_start(ws_event_thread_t *thread, ws_connection_t *conn,
+                        portico_response_t *res, size_t consumed) {
+    http_stream_t *s = malloc(sizeof *s);
+    uint8_t *buf = s ? malloc(PORTICO_STREAM_CHUNK) : NULL;
+    if (!s || !buf) { free(s); free(buf); close(res->file_fd); return http_error_close(thread, conn, 500); }
+    s->thread = thread; s->conn = conn; s->generation = conn->generation;
+    s->file_fd = res->file_fd; s->buf = buf; s->offset = 0;
+    s->size = res->file_size; s->keep_alive = res->keep_alive; s->reading = 0;
+
+    /* Consume this request (park the connection). */
+    if (consumed < conn->recv_buffer_used) {
+        memmove(conn->recv_buffer, conn->recv_buffer + consumed, conn->recv_buffer_used - consumed);
+        conn->recv_buffer_used -= consumed;
+    } else {
+        conn->recv_buffer_used = 0;
+    }
+
+    /* Response headers up front — length is known, so a normal Content-Length
+     * (no chunked transfer-encoding). res->headers already carries Content-Type. */
+    char hdr[PORTICO_RES_HEADERS_CAP + 256];
+    int hn = snprintf(hdr, sizeof hdr,
+        "HTTP/1.1 %d %s\r\n%.*sContent-Length: %lld\r\nConnection: %s\r\n\r\n",
+        res->status, portico_http_reason(res->status),
+        (int)res->headers_len, res->headers, s->size,
+        res->keep_alive ? "keep-alive" : "close");
+    if (hn < 0 || (size_t)hn >= sizeof hdr) { stream_free(s); return http_error_close(thread, conn, 500); }
+
+    conn->file_stream = s;
+    conn->http_async_inflight = 1;
+    if (portico_conn_send(thread, conn, hdr, (size_t)hn) != 0) {
+        conn->file_stream = NULL; conn->http_async_inflight = 0;
+        stream_free(s);
+        return -1;
+    }
+    /* Submit the first chunk read (stream_advance: aio in flight, or sync chunks
+     * until backpressure). It returns 0 parked / -1 close. */
+    int rc = stream_advance(s);   /* on -1, stream_advance already freed s */
+    if (rc < 0) {
+        if (conn->out_used > conn->out_sent) { conn->out_close_when_drained = 1; return 0; }
+        return -1;
+    }
+    return 0;
+}
+
 /* Begin serving res->file_fd on `conn`: capture state, consume this request, and
  * submit the async read (parking the connection). Falls back to a synchronous read
  * if async I/O is unavailable or the submit is refused. Returns -1 to close now,
@@ -398,6 +585,19 @@ static void file_read_complete(void *user, ssize_t nread) {
  * loop (a synchronous keep-alive response was sent). */
 static int http_serve_file(ws_event_thread_t *thread, ws_connection_t *conn,
                            portico_response_t *res, size_t consumed) {
+    /* Large files go through the streaming path (needs async I/O). */
+    if (thread->aio && res->file_size > PORTICO_STREAM_CHUNK)
+        return stream_start(thread, conn, res, consumed);
+    /* The single-read path can't exceed the out-buffer-bounded cap; without aio,
+     * a too-large file has no streaming path, so refuse it. */
+    if (res->file_size > PORTICO_SINGLE_MAX) {
+        close(res->file_fd);
+        if (consumed < conn->recv_buffer_used) {
+            memmove(conn->recv_buffer, conn->recv_buffer + consumed, conn->recv_buffer_used - consumed);
+            conn->recv_buffer_used -= consumed;
+        } else { conn->recv_buffer_used = 0; }
+        return http_error_close(thread, conn, 503);
+    }
     size_t size = (size_t)res->file_size;
     uint8_t *buf = malloc(size ? size : 1);
     http_file_ctx_t *ctx = buf ? malloc(sizeof *ctx) : NULL;
