@@ -1,0 +1,3 @@
+# precompressed siblings are generated at deploy, not committed
+*.br
+*.gz

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo · portico</title>
+<link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<nav>
+  <span class="brand"><img src="/assets/logo.svg" alt=""> portico</span>
+  <span class="spacer"></span>
+  <a class="link" href="/">Home</a>
+  <a class="link" href="/about/">About</a>
+  <a class="link" href="/demo/">Demo</a>
+</nav>
+
+<main v-scope="App()" @vue:mounted="init()">
+  <h1>Interactive demo</h1>
+  <p class="lead">petite-vue (≈6&nbsp;KB, served precompressed from this server) talking to
+     portico's own HTTP endpoints and a live WebSocket — same binary, same port.</p>
+
+  <div class="card">
+    <h2>Reactive counter</h2>
+    <div class="row">
+      <button @click="count++">+1</button>
+      <button class="ghost" @click="count--">−1</button>
+      <button class="ghost" @click="count = 0">reset</button>
+      <span class="mono">count = <strong>{{ count }}</strong></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Live API <button class="ghost" @click="load()" style="float:right">refresh</button></h2>
+    <div class="kv">
+      <span class="k">GET /health</span><span class="v mono" :class="health==='ok' ? 'ok' : 'warn'">{{ health }}</span>
+      <span class="k">GET /ip</span><span class="v mono">{{ ip }}</span>
+      <span class="k">page loaded</span><span class="v mono dim">{{ loadedAt }}</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>WebSocket echo
+      <span class="pill" :class="wsClass" style="float:right">{{ wsState }}</span></h2>
+    <p class="dim">Sends a binary frame over <span class="mono">{{ wsUrl }}</span>;
+       portico echoes it back. Round-trips through the same listener serving this page.</p>
+    <div class="row">
+      <input type="text" v-model="msg" @keydown.enter="send()">
+      <button @click="send()" :disabled="wsState !== 'open'">send</button>
+    </div>
+    <div class="kv">
+      <span class="k">sent</span><span class="v mono">{{ sent || '—' }}</span>
+      <span class="k">echoed</span><span class="v mono ok">{{ echo || '—' }}</span>
+    </div>
+  </div>
+</main>
+
+<footer>portico · demo · petite-vue + WSS</footer>
+
+<script src="/assets/petite-vue.iife.js"></script>
+<script>
+function App() {
+  return {
+    count: 0,
+    health: '…', ip: '…', loadedAt: '',
+    msg: 'hello portico', sent: '', echo: '',
+    ws: null, wsState: 'connecting',
+    get wsUrl() { return (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/'; },
+    get wsClass() { return this.wsState === 'open' ? 'ok' : (this.wsState === 'closed' ? 'warn' : 'dim'); },
+
+    init() {
+      this.loadedAt = new Date().toUTCString();
+      this.load();
+      this.connect();
+    },
+    load() {
+      fetch('/health').then(r => r.json()).then(d => this.health = d.status).catch(() => this.health = 'unreachable');
+      fetch('/ip').then(r => r.text()).then(t => this.ip = t.trim()).catch(() => this.ip = '—');
+    },
+    connect() {
+      try {
+        const ws = new WebSocket(this.wsUrl);
+        ws.binaryType = 'arraybuffer';
+        ws.onopen    = () => this.wsState = 'open';
+        ws.onclose   = () => this.wsState = 'closed';
+        ws.onerror   = () => this.wsState = 'error';
+        ws.onmessage = (e) => {
+          this.echo = (e.data instanceof ArrayBuffer) ? new TextDecoder().decode(e.data) : String(e.data);
+        };
+        this.ws = ws;
+      } catch (_) { this.wsState = 'error'; }
+    },
+    send() {
+      if (!this.ws || this.ws.readyState !== 1) return;
+      this.sent = this.msg;
+      this.ws.send(new TextEncoder().encode(this.msg));   // binary frame -> portico echoes it
+    }
+  };
+}
+PetiteVue.createApp().mount();
+</script>
+</body>
+</html>

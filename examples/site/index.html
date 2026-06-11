@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>portico · live</title>
+<link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<nav>
+  <span class="brand"><img src="/assets/logo.svg" alt=""> portico</span>
+  <span class="spacer"></span>
+  <a class="link" href="/">Home</a>
+  <a class="link" href="/about/">About</a>
+  <a class="link" href="/demo/">Demo</a>
+</nav>
+
+<main>
+  <section class="hero">
+    <div class="logo">🏛️</div>
+    <h1>It's alive on <span class="dom">portico-test.duckdns.org</span></h1>
+    <p class="lead">A multi-page site served by <strong>portico</strong> — a single-binary
+       HTTP/1.1 + WebSocket server in C, with a <strong>built-in ACME client</strong>.
+       No nginx. No certbot. No reverse proxy.</p>
+    <div class="badges">
+      <span class="b">epoll + io_uring</span>
+      <span class="b">HTTP/1.1 · WebSocket</span>
+      <span class="b">static via async aio</span>
+      <span class="b">br / gzip precompressed</span>
+      <span class="b lock">🔒 Let's Encrypt — self-issued &amp; auto-renewing</span>
+    </div>
+  </section>
+
+  <div class="card">
+    <h2>What you're looking at</h2>
+    <p>Every byte of this page — the HTML, the CSS, the SVG logo, the JavaScript — is
+       read off disk by portico's asynchronous file path and sent over a TLS connection
+       whose certificate portico obtained and renews <em>itself</em>.</p>
+    <div class="kv">
+      <span class="k">Pages</span><span class="v"><a href="/">/</a> · <a href="/about/">/about/</a> · <a href="/demo/">/demo/</a></span>
+      <span class="k">Assets</span><span class="v"><a href="/assets/style.css">style.css</a> · <a href="/assets/app.js">app.js</a> · <a href="/assets/logo.svg">logo.svg</a></span>
+      <span class="k">API</span><span class="v"><a href="/health">/health</a> · <a href="/ip">/ip</a></span>
+    </div>
+    <p class="dim">The <a href="/demo/">Demo</a> page wires petite-vue to those API
+       endpoints and opens a live WebSocket back to this same server.</p>
+  </div>
+</main>
+
+<footer>Oracle Free VM · certificate minted &amp; renewed by portico itself · static files compressed with brotli + gzip</footer>
+<script src="/assets/app.js"></script>
+</body>
+</html>

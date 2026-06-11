@@ -1,0 +1,62 @@
+/* Shared styles for the portico demo site. Served static + precompressed (.br/.gz). */
+:root { color-scheme: dark; }
+* { box-sizing: border-box; margin: 0; }
+body {
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #e7e9ee;
+  background: radial-gradient(1100px 560px at 50% -8%, #1d2b4a 0%, #0b1020 55%, #070a14 100%) fixed;
+  min-height: 100vh;
+}
+a { color: #8fb3ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+nav {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 1.2rem;
+  padding: .9rem 1.4rem;
+  background: rgba(10,14,26,.7); backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(255,255,255,.07);
+}
+nav .brand { display: flex; align-items: center; gap: .5rem; font-weight: 700; letter-spacing: -.01em; }
+nav .brand img { width: 24px; height: 24px; }
+nav .spacer { flex: 1; }
+nav a.link { color: #aab2c5; padding: .25rem .1rem; border-bottom: 2px solid transparent; }
+nav a.link.active { color: #fff; border-bottom-color: #8fb3ff; }
+
+main { max-width: 760px; margin: 0 auto; padding: 2.4rem 1.4rem 4rem; }
+.hero { text-align: center; padding: 2rem 0 1rem; }
+.hero .logo { font-size: 3rem; }
+h1 { font-size: 2rem; letter-spacing: -.02em; margin: .3rem 0 .5rem; }
+h2 { font-size: 1.3rem; margin: 2rem 0 .6rem; }
+p { color: #c2c8d6; margin: .7rem 0; }
+.dom { color: #8fb3ff; }
+.lead { color: #aab2c5; max-width: 52ch; margin: .6rem auto; }
+
+.card {
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
+  border-radius: 16px; padding: 1.6rem; margin: 1.2rem 0;
+  box-shadow: 0 20px 60px rgba(0,0,0,.35);
+}
+.badges { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; margin: 1.2rem 0; }
+.b { font-size: .82rem; padding: .35rem .7rem; border-radius: 999px;
+     background: rgba(143,179,255,.12); border: 1px solid rgba(143,179,255,.25); color: #cdd9f6; }
+.b.lock { color: #7ee0a6; border-color: rgba(126,224,166,.3); background: rgba(126,224,166,.1); }
+
+button {
+  font: inherit; cursor: pointer; color: #0b1020; font-weight: 600;
+  background: #8fb3ff; border: 0; border-radius: 10px; padding: .5rem .9rem;
+}
+button:hover { background: #a9c5ff; }
+button.ghost { background: transparent; color: #cdd9f6; border: 1px solid rgba(143,179,255,.35); }
+input[type=text] {
+  font: inherit; color: #e7e9ee; background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: .5rem .7rem; width: 14rem;
+}
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; margin: .6rem 0; }
+.kv { display: grid; grid-template-columns: 8rem 1fr; gap: .3rem .8rem; margin: .6rem 0; }
+.kv .k { color: #8b93a7; }
+.kv .v { color: #e7e9ee; }
+.pill { font-size: .78rem; padding: .15rem .5rem; border-radius: 999px; background: rgba(255,255,255,.08); }
+.ok { color: #7ee0a6; } .warn { color: #ffcf6b; } .dim { color: #6b7488; }
+footer { text-align: center; color: #6b7488; font-size: .82rem; padding: 2rem 1rem; }
