@@ -22,6 +22,7 @@ head -c 1500000 /dev/urandom         > "$ROOT/stream.bin"   # > 256KB → stream
 python3 -c "open('$ROOT/f.txt','wb').write(bytes(range(256))*20)"   # 5120 predictable bytes
 mkdir -p "$ROOT/sub" "$ROOT/noindex"
 printf 'SUBDIR INDEX' > "$ROOT/sub/index.html"                     # directory index
+for ext in mjs woff ttf otf avif mp4 webmanifest wasm; do printf 'x' > "$ROOT/asset.$ext"; done
 # A symlink pointing outside the docroot must NOT be served.
 ln -s /etc/passwd "$ROOT/escape.txt"
 
@@ -216,6 +217,17 @@ chk("multipart parts byte-exact",
     f"{len(got)} parts")
 s,_,_ = req_full("/f.txt", {"Range":"bytes=900000-,800000-"})
 chk("multi-range all unsatisfiable -> 416", s==416, f"status={s}")
+
+# ---- MIME types for modern web assets ----
+mime = {
+    "asset.mjs": "text/javascript; charset=utf-8",   # ES modules require a JS MIME
+    "asset.woff": "font/woff", "asset.ttf": "font/ttf", "asset.otf": "font/otf",
+    "asset.avif": "image/avif", "asset.mp4": "video/mp4",
+    "asset.webmanifest": "application/manifest+json", "asset.wasm": "application/wasm",
+}
+for fn, want in mime.items():
+    _, _, h = head("/"+fn)
+    chk(f"Content-Type {fn}", h.get("content-type")==want, f"got {h.get('content-type')}")
 
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)

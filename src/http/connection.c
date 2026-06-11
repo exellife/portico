@@ -294,13 +294,28 @@ static const char *content_type_for(const char *path) {
     if (!dot) return "application/octet-stream";
     dot++;
     struct { const char *ext, *ct; } m[] = {
+        /* documents / text */
         {"html","text/html; charset=utf-8"}, {"htm","text/html; charset=utf-8"},
-        {"css","text/css; charset=utf-8"},   {"js","application/javascript; charset=utf-8"},
-        {"json","application/json"},          {"txt","text/plain; charset=utf-8"},
+        {"css","text/css; charset=utf-8"},   {"txt","text/plain; charset=utf-8"},
+        {"xml","application/xml"},            {"pdf","application/pdf"},
+        {"csv","text/csv; charset=utf-8"},    {"md","text/markdown; charset=utf-8"},
+        /* scripts — .mjs must be a JS MIME or browsers reject the ES module */
+        {"js","text/javascript; charset=utf-8"},  {"mjs","text/javascript; charset=utf-8"},
+        {"json","application/json"},          {"map","application/json"},
+        {"wasm","application/wasm"},
+        {"webmanifest","application/manifest+json"}, {"manifest","application/manifest+json"},
+        /* images */
         {"svg","image/svg+xml"}, {"png","image/png"}, {"jpg","image/jpeg"},
         {"jpeg","image/jpeg"}, {"gif","image/gif"}, {"ico","image/x-icon"},
-        {"webp","image/webp"}, {"woff2","font/woff2"}, {"wasm","application/wasm"},
-        {"pdf","application/pdf"}, {"xml","application/xml"}, {NULL,NULL}
+        {"webp","image/webp"}, {"avif","image/avif"}, {"bmp","image/bmp"},
+        /* fonts */
+        {"woff2","font/woff2"}, {"woff","font/woff"}, {"ttf","font/ttf"},
+        {"otf","font/otf"}, {"eot","application/vnd.ms-fontobject"},
+        /* video / audio (Range-friendly) */
+        {"mp4","video/mp4"}, {"webm","video/webm"}, {"mov","video/quicktime"},
+        {"mp3","audio/mpeg"}, {"ogg","audio/ogg"}, {"wav","audio/wav"},
+        {"m4a","audio/mp4"}, {"flac","audio/flac"},
+        {NULL,NULL}
     };
     for (int i = 0; m[i].ext; i++) if (strcasecmp(dot, m[i].ext) == 0) return m[i].ct;
     return "application/octet-stream";
