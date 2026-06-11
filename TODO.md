@@ -114,7 +114,15 @@ Optional follow-ups:
             VALIDATED against LE *staging* (acme_staging_smoke): real account registered,
             order placed, a genuine http-01 token + key authz returned. ASan-clean, 20/20.
             (Challenge validation + finalize need a public :80 → the e2e task.)
-      - [ ] HTTP-01 responder → storage/reload/renewal → e2e on a public domain.
+      - [x] HTTP-01 challenge responder (src/acme/acme_responder.c) — a thread-safe
+            token→keyauth store + the well-known-path matcher portico's :80 dispatch
+            will call (the integration point), wrapped by an optional standalone :80
+            listener for the certbot-`--standalone` case. NOT a second server: same
+            process, a route. Tested (acme_responder_test, 13 cases): store/matcher
+            (provision/lookup/unprovision, path + token edge cases) + the standalone
+            listener exercised over a real loopback HTTP GET (200 + exact keyauth
+            body / 404). ASan- and TSan-clean.
+      - [ ] storage + reload hookup + renewal scheduler → e2e on a public domain.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a

@@ -56,7 +56,7 @@ file(GLOB PORTICO_ACME_SOURCES CONFIGURE_DEPENDS src/acme/*.c)
 add_library(portico_acme STATIC ${PORTICO_ACME_SOURCES})
 target_include_directories(portico_acme PUBLIC include src/acme)
 target_compile_options(portico_acme PRIVATE -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(portico_acme PUBLIC cjson)
+target_link_libraries(portico_acme PUBLIC cjson Threads::Threads)
 if(PORTICO_TLS)
     target_link_libraries(portico_acme PUBLIC OpenSSL::SSL OpenSSL::Crypto)
     target_compile_definitions(portico_acme PRIVATE PORTICO_TLS=1)
@@ -131,6 +131,12 @@ if(PORTICO_BUILD_TESTS)
     add_executable(acme_parse_test tests/acme_parse_test.c)
     target_link_libraries(acme_parse_test PRIVATE portico_acme)
     add_test(NAME acme_parse COMMAND acme_parse_test)
+
+    # ACME HTTP-01 responder: token store + well-known matcher + standalone :80
+    # listener, exercised over a real loopback HTTP GET. Plaintext, no OpenSSL.
+    add_executable(acme_responder_test tests/acme_responder_test.c)
+    target_link_libraries(acme_responder_test PRIVATE portico_acme)
+    add_test(NAME acme_responder COMMAND acme_responder_test)
 
     # ACME account key + JWS/ES256 (only with TLS — needs OpenSSL). Known-answer JWK/
     # thumbprint + cryptographic signature verification.

@@ -152,4 +152,32 @@ int portico_acme_obtain(const portico_acme_config_t *cfg,
                         const char *const *domains, size_t ndomains,
                         const char *cert_key_path, char **cert_pem);
 
+/* ---- HTTP-01 challenge responder ------------------------------------------
+ * The CA validates by fetching http://<domain>/.well-known/acme-challenge/<token>
+ * (plaintext :80, always). This is NOT a separate server: it's a thread-safe
+ * token→keyauth store plus the matcher portico's own :80 dispatch calls. A tiny
+ * standalone listener is provided for the certbot-`--standalone` case (no portico
+ * in front) and to test the route in isolation. Plaintext only — no TLS, no JSON. */
+typedef struct portico_acme_responder portico_acme_responder_t;
+
+portico_acme_responder_t *portico_acme_responder_new(void);
+void portico_acme_responder_free(portico_acme_responder_t *r);
+
+/* Register / tear down a challenge response (thread-safe). The signatures match the
+ * obtain() provision/unprovision callbacks — wire them with the responder as `ud`. */
+void portico_acme_responder_provision(const char *token, const char *keyauth, void *ud);
+void portico_acme_responder_unprovision(const char *token, void *ud);
+
+/* The matcher portico's plaintext dispatch calls. If `path` is a well-known ACME
+ * challenge path whose token is provisioned, copies the key authorization into `out`
+ * and returns its length; returns -1 otherwise (not ours, or unknown token). */
+int portico_acme_responder_lookup(portico_acme_responder_t *r, const char *path,
+                                  char *out, size_t cap);
+
+/* Standalone mode: bind 0.0.0.0:<port> (80 in production; 0 = ephemeral) and serve
+ * challenge paths from a background thread. Returns the bound port (>0) or -1.
+ * Used only when portico isn't already fronting :80. */
+int  portico_acme_responder_listen(portico_acme_responder_t *r, int port);
+void portico_acme_responder_stop(portico_acme_responder_t *r);
+
 #endif /* PORTICO_ACME_INTERNAL_H */
