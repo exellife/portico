@@ -83,8 +83,9 @@ int process_new_connection(int fd, const struct sockaddr_storage *client_addr, s
 
     /* TLS listener: wrap the fd and start in the handshake state so the first
      * reads drive SSL_accept rather than the HTTP/WS dispatch. Fail closed. */
-    if (server && server->tls_ctx) {
-        conn->ssl = ws_tls_conn_new(server->tls_ctx, fd);
+    void *tctx = server ? server->tls_ctx : NULL;   /* atomic load (reload may swap) */
+    if (tctx) {
+        conn->ssl = ws_tls_conn_new(tctx, fd);
         if (!conn->ssl) {
             WS_ERROR_LOG("Thread %u: TLS init failed for fd=%d", thread->thread_id, fd);
             ws_connection_cleanup(conn);

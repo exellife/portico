@@ -151,6 +151,9 @@ if(PORTICO_BUILD_TESTS)
             # SNI multi-cert: a different per-domain cert is presented by SNI server_name.
             add_test(NAME sni
                 COMMAND bash ${CMAKE_SOURCE_DIR}/tests/sni_test.sh $<TARGET_FILE:http_server>)
+            # SIGHUP TLS cert hot-reload: new certs served, server stays up (zero downtime).
+            add_test(NAME reload
+                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/reload_test.sh $<TARGET_FILE:http_server>)
         endif()
     endif()
 endif()

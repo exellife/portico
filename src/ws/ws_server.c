@@ -308,10 +308,15 @@ void ws_server_destroy_internal(ws_server_t *server) {
         internal->listen_fd = -1;
     }
 
-    /* Free the TLS context (after the listener is closed and threads stopped). */
+    /* Free the TLS context group + any group retired by a reload (after the
+     * listener is closed and threads stopped). */
     if (internal->tls_ctx) {
         ws_tls_ctx_free(internal->tls_ctx);
         internal->tls_ctx = NULL;
+    }
+    if (internal->tls_ctx_retired) {
+        ws_tls_ctx_free(internal->tls_ctx_retired);
+        internal->tls_ctx_retired = NULL;
     }
 
     /* Destroy global hash table */
@@ -335,6 +340,46 @@ void ws_server_destroy_internal(ws_server_t *server) {
 
     free(internal);
     WS_DEBUG_LOG("WebSocket server destroyed");
+}
+
+/* Hot-reload TLS certificates without a restart (e.g. after ACME renewal). Rebuilds
+ * the context group from the SAME configured cert/key paths — which must now hold
+ * the new certs on disk — and atomically swaps it in; new connections use it at
+ * once, in-flight ones keep their old SSL objects. Call from a normal thread (NOT a
+ * signal handler): wire SIGHUP to set a flag and invoke this from the main loop.
+ * Returns 0 on success, -1 if not a TLS listener or a cert failed to load (the
+ * running certs are kept on failure). */
+int ws_server_reload_tls_internal(ws_server_t *server) {
+    ws_server_internal_t *s = (ws_server_internal_t *)server;
+    if (!s || !s->tls_ctx) return -1;
+
+    void *ng = ws_tls_ctx_create(s->config.tls_cert_file, s->config.tls_key_file);
+    if (!ng) {
+        WS_ERROR_LOG("TLS reload: failed to load '%s' (keeping current certs)",
+                     s->config.tls_cert_file ? s->config.tls_cert_file : "?");
+        return -1;
+    }
+    for (size_t i = 0; i < s->config.tls_sni_cert_count; i++) {
+        const ws_tls_sni_cert_t *c = &s->config.tls_sni_certs[i];
+        if (ws_tls_ctx_add_sni(ng, c->hostname, c->cert_file, c->key_file) != 0) {
+            WS_ERROR_LOG("TLS reload: failed SNI cert for '%s' (keeping current certs)",
+                         c->hostname ? c->hostname : "?");
+            ws_tls_ctx_free(ng);
+            return -1;
+        }
+    }
+
+    /* Swap in the new group; new connections pick it up immediately. Free the group
+     * retired by the PREVIOUS reload — any handshake that referenced it has long
+     * since completed (reloads are far apart) — then retire the one just replaced.
+     * In-flight SSLs from the retired group keep their SSL_CTX alive via OpenSSL
+     * refcounting; this grace period covers the group struct + its SNI callback arg. */
+    void *old = atomic_exchange(&s->tls_ctx, ng);
+    if (s->tls_ctx_retired) ws_tls_ctx_free(s->tls_ctx_retired);
+    s->tls_ctx_retired = old;
+
+    WS_DEBUG_LOG("TLS certificates reloaded");
+    return 0;
 }
 
 /* ============================================================================

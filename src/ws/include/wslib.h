@@ -230,6 +230,14 @@ ws_server_t* ws_server_create(const ws_config_t *config);
  */
 void ws_server_destroy(ws_server_t *server);
 
+/* Hot-reload TLS certificates without a restart. Rebuilds the cert(s) from the
+ * same configured paths (which must now hold the renewed certs) and atomically
+ * swaps them in; new connections use them immediately, in-flight ones are
+ * undisturbed. Call from a normal context (e.g. a SIGHUP flag checked in your main
+ * loop), NOT from the signal handler. 0 on success, -1 if not a TLS server or a
+ * cert failed to load (the running certs are kept). */
+int ws_server_reload_tls(ws_server_t *server);
+
 /**
  * Start the WebSocket server (non-blocking).
  * 

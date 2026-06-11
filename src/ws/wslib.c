@@ -55,6 +55,11 @@ void ws_server_destroy(ws_server_t *server) {
     ws_server_destroy_internal(server);
 }
 
+int ws_server_reload_tls(ws_server_t *server) {
+    if (!server) return -1;
+    return ws_server_reload_tls_internal(server);
+}
+
 int ws_server_start(ws_server_t *server, const ws_callbacks_t *callbacks) {
     if (!server || !callbacks) {
         return -1;

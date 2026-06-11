@@ -75,13 +75,16 @@ static int on_http(const portico_request_t *req, portico_response_t *res, void *
     return 0;
 }
 
+static volatile sig_atomic_t g_reload = 0;
 static void on_signal(int s) { (void)s; g_running = 0; }
+static void on_hup(int s)    { (void)s; g_reload = 1; }   /* SIGHUP → reload TLS certs */
 
 int main(void) {
     const char *p = getenv("PORT");
     int port = (p && *p) ? atoi(p) : 8080;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+    signal(SIGHUP, on_hup);
 
     ws_config_t cfg = {0};
     cfg.port = (uint16_t)port;
@@ -164,7 +167,10 @@ int main(void) {
     }
     fprintf(stderr, "portico http+ws server on :%d\n", port);
 
-    while (g_running) pause();
+    while (g_running) {
+        pause();                                  /* wakes on any signal */
+        if (g_reload) { g_reload = 0; ws_server_reload_tls(g_server); }
+    }
     ws_server_destroy(g_server);
     return 0;
 }

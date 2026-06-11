@@ -231,9 +231,12 @@ typedef struct ws_server {
     /* Callbacks */
     ws_callbacks_t callbacks;      /* Application callbacks */
 
-    /* TLS server context (SSL_CTX*, kept as void* so this header needs no
-     * OpenSSL include). NULL = plaintext listener; shared read-only by conns. */
-    void *tls_ctx;
+    /* TLS server context group (kept as void* so this header needs no OpenSSL
+     * include). NULL = plaintext listener. Atomic: new connections load it while a
+     * SIGHUP reload may swap it. tls_ctx_retired holds the previous group during
+     * the one-reload grace period before it can be freed (see ws_server_reload_tls). */
+    _Atomic(void *) tls_ctx;
+    void           *tls_ctx_retired;
 } ws_server_internal_t;
 
 /* ============================================================================
@@ -242,6 +245,9 @@ typedef struct ws_server {
 
 /* Create server with threading */
 ws_server_t* ws_server_create_internal(const ws_config_t *config);
+
+/* Hot-reload TLS certs from the configured paths (SIGHUP). */
+int ws_server_reload_tls_internal(ws_server_t *server);
 
 /* Destroy server */
 void ws_server_destroy_internal(ws_server_t *server);

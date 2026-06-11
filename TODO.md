@@ -72,7 +72,14 @@ core-I/O surgery is isolated:
       and ASan-clean; suite 12/12. This is the HTTPS half of multi-site-on-one-IP;
       the HTTP half (Host routing) is already doable in the handler today.
 Optional follow-ups:
-- [ ] SIGHUP cert reload (hot-rotate without a restart).
+- [x] **SIGHUP cert hot-reload** (`ws_server_reload_tls`) — zero-downtime cert renewal
+      (e.g. ACME). Rebuilds the context group from the same configured paths (now
+      holding the renewed certs) and atomically swaps `tls_ctx`; new connections use
+      it immediately, in-flight ones keep their old SSL objects. The retired group is
+      freed one reload later (a grace period over the group struct + SNI callback arg;
+      the SSL_CTXs themselves are OpenSSL-refcounted). `tls_ctx` is now `_Atomic`.
+      Wire SIGHUP→flag→reload from your main loop (the example does). Tested
+      (gen1→gen2→gen3 across two reloads, server stays up); ASan- and TSan-clean.
 - [x] **ALPN** — every SSL_CTX selects `http/1.1` via SSL_CTX_set_alpn_select_cb, so an
       h2-capable client uses 1.1 instead of attempting HTTP/2 (and clients that require
       an ALPN response get one). The hook for adding h2 later. Tested (s_client -alpn
