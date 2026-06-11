@@ -35,7 +35,7 @@ done
 
 set +e   # capture the test exit codes ourselves below
 PORT="$PORT" ROOT="$ROOT" python3 - <<'PY'
-import http.client, os, sys, hashlib
+import http.client, os, sys, hashlib, re
 PORT=int(os.environ["PORT"]); ROOT=os.environ["ROOT"]
 ok=0; fail=0
 def chk(name, cond, extra=""):
@@ -195,6 +195,27 @@ s,b,h = head("/f.txt", {"Range":"bytes=0-99"})
 chk("ranged HEAD -> 206 + Content-Range, empty body",
     s==206 and h.get("content-range")==f"bytes 0-99/{N}" and h.get("content-length")=="100" and b==b"",
     f"status={s} cr={h.get('content-range')}")
+
+# ---- multipart/byteranges (multiple ranges) ----
+s,b,h = req_full("/f.txt", {"Range":"bytes=0-9,100-109,500-509"})
+ct = h.get("content-type","")
+chk("multi-range -> 206 multipart/byteranges", s==206 and ct.startswith("multipart/byteranges"),
+    f"status={s} ct={ct}")
+got = {}
+if "boundary=" in ct:
+    boundary = ct.split("boundary=",1)[1].strip().encode()
+    for seg in b.split(b"--"+boundary):
+        if b"Content-Range" not in seg: continue
+        hd, _, dat = seg.partition(b"\r\n\r\n")
+        m = re.search(rb"bytes (\d+)-(\d+)/", hd)
+        if m:
+            a, e = int(m.group(1)), int(m.group(2))
+            got[a] = dat[:e-a+1]
+chk("multipart parts byte-exact",
+    len(got)==3 and got.get(0)==fdata[0:10] and got.get(100)==fdata[100:110] and got.get(500)==fdata[500:510],
+    f"{len(got)} parts")
+s,_,_ = req_full("/f.txt", {"Range":"bytes=900000-,800000-"})
+chk("multi-range all unsatisfiable -> 416", s==416, f"status={s}")
 
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)

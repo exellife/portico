@@ -232,8 +232,17 @@ the foundation, built first as a standalone, isolation-tested library.
       response flag and the builder emits Content-Length from file_size with an empty
       body. Tested (HEAD 200 with correct Content-Length + empty body; ranged HEAD →
       206 + Content-Range + empty body) across 3 backends, ASan-clean, suite 11/11.
-      Follow-ups: multipart/byteranges (multi-range), read-ahead (double-buffer) for
-      streaming throughput, io_uring batched-submit/SQPOLL tuning.
+- [x] **Multipart/byteranges (multi-range)** (src/http/connection.c) — a request with
+      several ranges (`Range: bytes=0-9,100-109,...`) is answered as a
+      `multipart/byteranges` 206 with a boundary-delimited body (each part carrying
+      its own Content-Type + Content-Range). Bounded: assembled in memory with a cap
+      on range count (16) and total bytes (1 MiB) — over that, or if the body can't be
+      assembled, it falls back to the spec-allowed full 200 (which streams). None
+      satisfiable → 416; a single effective range → the normal single-range path; a
+      HEAD multi-range → full HEAD. Tested (parts byte-exact, all-unsatisfiable 416)
+      across 3 backends, ASan-clean, suite 11/11.
+      Follow-ups: read-ahead (double-buffer) for streaming throughput, io_uring
+      batched-submit/SQPOLL tuning, fully-streamed (unbounded) multipart.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 

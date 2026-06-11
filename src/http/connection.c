@@ -396,6 +396,78 @@ static int req_header_copy(const portico_request_t *req, const char *name, char 
     return 1;
 }
 
+#define PORTICO_MULTIPART_MAX_RANGES 16
+#define PORTICO_MULTIPART_MAX_BYTES  (1024 * 1024)   /* assembled body cap; larger → full 200 */
+
+/* Multi-range (RFC 7233 multipart/byteranges). Builds the whole multipart body in
+ * memory and hands it to the normal in-memory response path. Bounded: too many
+ * ranges, or an assembled body over the cap, returns 1 to fall back to a full 200
+ * (which streams). Returns 0 served (sets res->body + headers + 206), 1 fall back,
+ * -1 = 416 (no satisfiable range). The assembling reads are synchronous, which is
+ * acceptable here: multi-range is rare and the body is capped small. */
+static int serve_byteranges(portico_response_t *res, int fd, const char *rangehdr,
+                            long long total, const char *ctype,
+                            const char *etag, const char *lastmod) {
+    if (strncmp(rangehdr, "bytes=", 6) != 0) return 1;
+    char tmp[512];
+    if (strlen(rangehdr) >= sizeof tmp) return 1;
+    strcpy(tmp, rangehdr + 6);
+
+    struct { long long start, len; } parts[PORTICO_MULTIPART_MAX_RANGES];
+    int np = 0; long long data_bytes = 0;
+    for (char *tok = strtok(tmp, ","); tok; tok = strtok(NULL, ",")) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        char spec[80];
+        if (snprintf(spec, sizeof spec, "bytes=%s", tok) >= (int)sizeof spec) return 1;
+        long long rs, rl;
+        if (parse_range(spec, total, &rs, &rl) == 0) {        /* skip unsatisfiable/bad */
+            if (np >= PORTICO_MULTIPART_MAX_RANGES) return 1; /* too many → full 200 */
+            parts[np].start = rs; parts[np].len = rl; np++;
+            data_bytes += rl;
+        }
+    }
+    if (np == 0) return -1;     /* none satisfiable → 416 */
+    if (np == 1) return 1;      /* collapsed to one → let the single-range path serve it */
+
+    /* Boundary derived from the (per-version) ETag — adequately unique in practice. */
+    char boundary[96];
+    snprintf(boundary, sizeof boundary, "PORTICO_BYTERANGE_%s", etag[0] == '"' ? etag + 1 : etag);
+    char *qz = strchr(boundary, '"'); if (qz) *qz = '\0';
+    size_t blen = strlen(boundary), ctlen = strlen(ctype);
+
+    size_t overhead = (size_t)np * (blen + ctlen + 160) + blen + 16;
+    if (data_bytes + (long long)overhead > PORTICO_MULTIPART_MAX_BYTES) return 1;
+    size_t cap = (size_t)data_bytes + overhead;
+    uint8_t *body = malloc(cap);
+    if (!body) return 1;
+
+    size_t o = 0;
+    for (int i = 0; i < np; i++) {
+        o += (size_t)snprintf((char *)body + o, cap - o,
+            "--%s\r\nContent-Type: %s\r\nContent-Range: bytes %lld-%lld/%lld\r\n\r\n",
+            boundary, ctype, parts[i].start, parts[i].start + parts[i].len - 1, total);
+        ssize_t n;
+        do { n = pread(fd, body + o, (size_t)parts[i].len, parts[i].start); } while (n < 0 && errno == EINTR);
+        if (n != (ssize_t)parts[i].len) { free(body); return 1; }
+        o += (size_t)parts[i].len;
+        o += (size_t)snprintf((char *)body + o, cap - o, "\r\n");
+    }
+    o += (size_t)snprintf((char *)body + o, cap - o, "--%s--\r\n", boundary);
+
+    char cthdr[160];
+    snprintf(cthdr, sizeof cthdr, "multipart/byteranges; boundary=%s", boundary);
+    portico_res_header(res, "Content-Type", cthdr);
+    portico_res_header(res, "Accept-Ranges", "bytes");
+    portico_res_header(res, "ETag", etag);
+    portico_res_header(res, "Last-Modified", lastmod);
+    res->status = 206;
+    res->body = (char *)body;
+    res->body_len = o;
+    res->owns_body = 1;
+    res->is_file = 0;
+    return 0;
+}
+
 int portico_res_static(portico_response_t *res, const portico_request_t *req,
                        const portico_static_opts_t *opts) {
     if (!res || !req || !opts || !opts->docroot) { if (res) res->status = 500; return -1; }
@@ -488,6 +560,8 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
         return 0;
     }
 
+    int is_head = portico_req_method_is(req, "HEAD");
+
     /* Range (RFC 7233): honor it unless an If-Range validator shows the client's
      * cached partial is stale, in which case serve the full 200 instead. */
     long long start = 0, length = total;
@@ -501,18 +575,34 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
             else { time_t d = parse_http_date(ir); honor = (d != (time_t)-1 && st.st_mtim.tv_sec <= d); }
         }
         if (honor) {
-            long long rs, rl;
-            int rr = parse_range(hbuf, total, &rs, &rl);
-            if (rr == 0) { start = rs; length = rl; is_range = 1; }
-            else if (rr == 1) {                              /* 416 Range Not Satisfiable */
-                close(fd);
-                char cr[64]; snprintf(cr, sizeof cr, "bytes */%lld", total);
-                portico_res_header(res, "Content-Range", cr);
-                portico_res_header(res, "Accept-Ranges", "bytes");
-                res->status = 416; res->is_file = 0;
-                return -1;
+            /* Multiple ranges → multipart/byteranges (GET only; a HEAD multi-range
+             * just falls through to a full HEAD). */
+            if (!is_head && strchr(hbuf, ',')) {
+                int mr = serve_byteranges(res, fd, hbuf, total, content_type_for(resolved), etag, lastmod);
+                if (mr == 0) { close(fd); return 0; }        /* multipart body built + sent */
+                if (mr == -1) {                              /* none satisfiable → 416 */
+                    close(fd);
+                    char cr[64]; snprintf(cr, sizeof cr, "bytes */%lld", total);
+                    portico_res_header(res, "Content-Range", cr);
+                    portico_res_header(res, "Accept-Ranges", "bytes");
+                    res->status = 416; res->is_file = 0;
+                    return -1;
+                }
+                /* mr == 1: too big / too many → fall through to a full 200 */
+            } else {
+                long long rs, rl;
+                int rr = parse_range(hbuf, total, &rs, &rl);
+                if (rr == 0) { start = rs; length = rl; is_range = 1; }
+                else if (rr == 1) {                          /* 416 Range Not Satisfiable */
+                    close(fd);
+                    char cr[64]; snprintf(cr, sizeof cr, "bytes */%lld", total);
+                    portico_res_header(res, "Content-Range", cr);
+                    portico_res_header(res, "Accept-Ranges", "bytes");
+                    res->status = 416; res->is_file = 0;
+                    return -1;
+                }
+                /* rr == -1: malformed → ignore, serve full */
             }
-            /* rr == -1: malformed/multi range → ignore, serve full */
         }
     }
 
@@ -530,7 +620,7 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
     }
     /* HEAD: same status + headers (incl. Content-Range for a ranged HEAD) but no
      * body — and no file read. The builder emits Content-Length from file_size. */
-    if (portico_req_method_is(req, "HEAD")) {
+    if (is_head) {
         close(fd);
         res->head_only = 1;
         res->file_size = length;
