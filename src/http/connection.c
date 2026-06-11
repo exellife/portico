@@ -489,6 +489,37 @@ static int serve_byteranges(portico_response_t *res, int fd, const char *rangehd
     return 0;
 }
 
+/* Does the Accept-Encoding header `ae` list coding `name` (ignoring the rare
+ * explicit q=0)? Simple token scan — adequate for br/gzip negotiation. */
+static int accepts_encoding(const char *ae, const char *name) {
+    size_t nl = strlen(name);
+    for (const char *p = ae; *p; ) {
+        while (*p == ' ' || *p == ',') p++;
+        const char *tok = p;
+        while (*p && *p != ',' && *p != ';' && *p != ' ') p++;
+        if ((size_t)(p - tok) == nl && strncasecmp(tok, name, nl) == 0) return 1;
+        while (*p && *p != ',') p++;
+    }
+    return 0;
+}
+
+/* If a sibling precompressed file `<base><suffix>` exists within the docroot,
+ * swap the open fd + stat to it and return 1; else leave them and return 0. */
+static int try_precompressed(const char *base, const char *suffix, const char *rootreal,
+                             size_t rl, int *fd, struct stat *st) {
+    char vp[PATH_MAX], vr[PATH_MAX];
+    if ((size_t)snprintf(vp, sizeof vp, "%s%s", base, suffix) >= sizeof vp) return 0;
+    if (!realpath(vp, vr)) return 0;
+    if (strncmp(vr, rootreal, rl) != 0 || (vr[rl] != '/' && vr[rl] != '\0')) return 0;
+    int nfd = open(vr, O_RDONLY | O_CLOEXEC);
+    if (nfd < 0) return 0;
+    struct stat ns;
+    if (fstat(nfd, &ns) != 0 || !S_ISREG(ns.st_mode)) { close(nfd); return 0; }
+    close(*fd);
+    *fd = nfd; *st = ns;
+    return 1;
+}
+
 int portico_res_static(portico_response_t *res, const portico_request_t *req,
                        const portico_static_opts_t *opts) {
     if (!res || !req || !opts || !opts->docroot) { if (res) res->status = 500; return -1; }
@@ -557,8 +588,22 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
     if (!S_ISREG(st.st_mode)) { close(fd); res->status = 404; return -1; }
     if (st.st_size > PORTICO_FILE_MAX) { close(fd); res->status = 413; return -1; }
 
+    /* Content-Type comes from the ORIGINAL extension (before any encoding swap). */
+    const char *ctype = content_type_for(resolved);
+
+    /* Precompressed negotiation: when enabled and the client accepts br/gzip and a
+     * sibling <file>.br / <file>.gz exists, serve THAT (smaller) file with
+     * Content-Encoding; the served file's stat then drives ETag/size/Range, so a
+     * range applies to the compressed bytes (RFC-correct). Prefer brotli. */
+    const char *enc = NULL;
+    char hbuf[256];
+    if (opts->precompressed && req_header_copy(req, "Accept-Encoding", hbuf, sizeof hbuf)) {
+        if (accepts_encoding(hbuf, "br")   && try_precompressed(resolved, ".br", rootreal, rl, &fd, &st)) enc = "br";
+        else if (accepts_encoding(hbuf, "gzip") && try_precompressed(resolved, ".gz", rootreal, rl, &fd, &st)) enc = "gzip";
+    }
+
     /* Validators for conditional + range requests. */
-    char etag[64], lastmod[40], hbuf[256];
+    char etag[64], lastmod[40];
     file_etag(&st, etag, sizeof etag);
     http_date(st.st_mtim.tv_sec, lastmod, sizeof lastmod);
     long long total = (long long)st.st_size;
@@ -627,10 +672,14 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
         }
     }
 
-    portico_res_header(res, "Content-Type", content_type_for(resolved));
+    portico_res_header(res, "Content-Type", ctype);
     portico_res_header(res, "Accept-Ranges", "bytes");
     portico_res_header(res, "ETag", etag);
     portico_res_header(res, "Last-Modified", lastmod);
+    if (enc) portico_res_header(res, "Content-Encoding", enc);
+    /* Responses depend on Accept-Encoding when compression is in play, so caches
+     * must key on it. */
+    if (opts->precompressed) portico_res_header(res, "Vary", "Accept-Encoding");
     if (is_range) {
         char cr[80];
         snprintf(cr, sizeof cr, "bytes %lld-%lld/%lld", start, start + length - 1, total);

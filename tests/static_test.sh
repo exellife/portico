@@ -23,11 +23,16 @@ python3 -c "open('$ROOT/f.txt','wb').write(bytes(range(256))*20)"   # 5120 predi
 mkdir -p "$ROOT/sub" "$ROOT/noindex"
 printf 'SUBDIR INDEX' > "$ROOT/sub/index.html"                     # directory index
 for ext in mjs woff ttf otf avif mp4 webmanifest wasm; do printf 'x' > "$ROOT/asset.$ext"; done
+# Precompressed variants (stand-in bytes; the server just negotiates + serves them).
+printf 'UNCOMPRESSED-CSS' > "$ROOT/app.css"
+printf 'BR-BYTES'         > "$ROOT/app.css.br"
+printf 'GZ-BYTES'         > "$ROOT/app.css.gz"
+printf 'ONLY-GZIP'        > "$ROOT/b.css"; printf 'B-GZ' > "$ROOT/b.css.gz"
 # A symlink pointing outside the docroot must NOT be served.
 ln -s /etc/passwd "$ROOT/escape.txt"
 
 PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-STATIC_ROOT="$ROOT" PORT="$PORT" "$BIN" >/tmp/portico_static_srv.log 2>&1 &
+STATIC_ROOT="$ROOT" STATIC_PRECOMPRESSED=1 PORT="$PORT" "$BIN" >/tmp/portico_static_srv.log 2>&1 &
 SRV=$!
 for i in $(seq 1 80); do
   (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null && { exec 3>&-; break; }
@@ -228,6 +233,24 @@ mime = {
 for fn, want in mime.items():
     _, _, h = head("/"+fn)
     chk(f"Content-Type {fn}", h.get("content-type")==want, f"got {h.get('content-type')}")
+
+# ---- precompressed (Content-Encoding negotiation) ----
+s,b,h = req_full("/app.css", {"Accept-Encoding":"br, gzip"})
+chk("br preferred -> serves .br",
+    s==200 and b==b"BR-BYTES" and h.get("content-encoding")=="br"
+    and h.get("content-type")=="text/css; charset=utf-8" and h.get("vary")=="Accept-Encoding",
+    f"enc={h.get('content-encoding')} ct={h.get('content-type')}")
+s,b,h = req_full("/app.css", {"Accept-Encoding":"gzip"})
+chk("gzip accepted -> serves .gz", s==200 and b==b"GZ-BYTES" and h.get("content-encoding")=="gzip",
+    f"enc={h.get('content-encoding')}")
+s,b,h = req_full("/app.css")
+chk("no Accept-Encoding -> identity", s==200 and b==b"UNCOMPRESSED-CSS" and not h.get("content-encoding"),
+    f"enc={h.get('content-encoding')}")
+s,b,h = req_full("/app.css", {"Accept-Encoding":"identity"})
+chk("identity only -> uncompressed", s==200 and b==b"UNCOMPRESSED-CSS", f"len={len(b)}")
+s,b,h = req_full("/b.css", {"Accept-Encoding":"br, gzip"})
+chk("br accepted but only .gz exists -> .gz", s==200 and b==b"B-GZ" and h.get("content-encoding")=="gzip",
+    f"enc={h.get('content-encoding')}")
 
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)

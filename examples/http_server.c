@@ -108,9 +108,10 @@ int main(void) {
     if (!g_server) { fprintf(stderr, "create failed\n"); return 1; }
 
     ws_callbacks_t cb = {0};
-    g_static.docroot    = getenv("STATIC_ROOT");      /* serve this folder, if set */
-    g_static.url_prefix = getenv("STATIC_PREFIX");     /* e.g. "/static"; NULL = mount at / */
-    g_static.index      = getenv("STATIC_INDEX");      /* NULL = index.html */
+    g_static.docroot      = getenv("STATIC_ROOT");      /* serve this folder, if set */
+    g_static.url_prefix   = getenv("STATIC_PREFIX");     /* e.g. "/static"; NULL = mount at / */
+    g_static.index        = getenv("STATIC_INDEX");      /* NULL = index.html */
+    g_static.precompressed = getenv("STATIC_PRECOMPRESSED") != NULL;  /* serve .br/.gz */
 
     cb.on_binary_message = on_binary;
     cb.on_http_request   = on_http;

@@ -258,6 +258,17 @@ the foundation, built first as a standalone, isolation-tested library.
       and SQPOLL would burn a core for nothing (these matter for a high-IOPS path like the
       data API, not large-file streaming). Revisit read-ahead only if slow-disk profiling
       ever shows a need.
+- [x] **MIME map for modern assets** — content_type_for() now covers .mjs/.js
+      (text/javascript — required or browsers reject ES modules), fonts
+      (woff2/woff/ttf/otf/eot), images (+avif/bmp), video/audio
+      (mp4/webm/mov/mp3/ogg/wav/m4a/flac), .webmanifest, .map/.csv/.md.
+- [x] **Precompressed gzip/brotli** (`portico_static_opts_t.precompressed`) — when
+      enabled and the client sends Accept-Encoding, serve a sibling `<file>.br`/`.gz`
+      if present (brotli preferred) with `Content-Encoding` + `Vary: Accept-Encoding`;
+      Content-Type stays the original; ETag/size/Range come from the served (compressed)
+      file. Falls back to identity. No on-the-fly compression (precompress at build time).
+      Tested (br preferred, gzip fallback, identity, .gz-only) across 3 backends,
+      ASan-clean, suite 11/11.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 

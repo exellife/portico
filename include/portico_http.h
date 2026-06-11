@@ -89,6 +89,8 @@ typedef struct {
                                * e.g. "/static" (no trailing slash); NULL = none */
     const char *index;        /* directory index filename; NULL = "index.html",
                                * "" = disable (a directory request → 403) */
+    int         precompressed;/* when set, serve a sibling <file>.br/.gz if it exists
+                               * and the client accepts it (Content-Encoding + Vary) */
 } portico_static_opts_t;
 
 /* Like portico_res_file but with URL-prefix stripping and a directory index, so a
