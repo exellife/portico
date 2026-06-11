@@ -43,9 +43,9 @@ static int on_http(const portico_request_t *req, portico_response_t *res, void *
         portico_res_text(res, 200, portico_req_client_ip(req));   /* resolved client IP */
         return 0;
     }
-    if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/")) {
+    if (!static_root && portico_req_method_is(req, "GET") && portico_req_path_is(req, "/")) {
         portico_res_text(res, 200, "portico http+ws server\n");
-        return 0;
+        return 0;   /* when STATIC_ROOT is set, "/" is served from the docroot below */
     }
     if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/health")) {
         portico_res_json(res, "{\"status\":\"ok\"}");
