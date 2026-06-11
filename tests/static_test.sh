@@ -32,7 +32,8 @@ printf 'ONLY-GZIP'        > "$ROOT/b.css"; printf 'B-GZ' > "$ROOT/b.css.gz"
 ln -s /etc/passwd "$ROOT/escape.txt"
 
 PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-STATIC_ROOT="$ROOT" STATIC_PRECOMPRESSED=1 PORT="$PORT" "$BIN" >/tmp/portico_static_srv.log 2>&1 &
+STATIC_ROOT="$ROOT" STATIC_PRECOMPRESSED=1 STATIC_CACHE_CONTROL="public, max-age=3600" \
+  PORT="$PORT" "$BIN" >/tmp/portico_static_srv.log 2>&1 &
 SRV=$!
 for i in $(seq 1 80); do
   (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null && { exec 3>&-; break; }
@@ -251,6 +252,12 @@ chk("identity only -> uncompressed", s==200 and b==b"UNCOMPRESSED-CSS", f"len={l
 s,b,h = req_full("/b.css", {"Accept-Encoding":"br, gzip"})
 chk("br accepted but only .gz exists -> .gz", s==200 and b==b"B-GZ" and h.get("content-encoding")=="gzip",
     f"enc={h.get('content-encoding')}")
+
+# ---- Cache-Control ----
+s,_,h = req_full("/f.txt")
+chk("Cache-Control on 200", h.get("cache-control")=="public, max-age=3600", str(h.get("cache-control")))
+_,_,h2 = req_full("/f.txt", {"If-None-Match": h.get("etag")})
+chk("Cache-Control on 304", h2.get("cache-control")=="public, max-age=3600", str(h2.get("cache-control")))
 
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)

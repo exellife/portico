@@ -91,6 +91,9 @@ typedef struct {
                                * "" = disable (a directory request → 403) */
     int         precompressed;/* when set, serve a sibling <file>.br/.gz if it exists
                                * and the client accepts it (Content-Encoding + Vary) */
+    const char *cache_control;/* if set, emitted as Cache-Control on file responses,
+                               * e.g. "public, max-age=31536000, immutable" for
+                               * fingerprinted assets, or "no-cache" for HTML. NULL = none */
 } portico_static_opts_t;
 
 /* Like portico_res_file but with URL-prefix stripping and a directory index, so a

@@ -621,6 +621,7 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
         close(fd);
         portico_res_header(res, "ETag", etag);
         portico_res_header(res, "Last-Modified", lastmod);
+        if (opts->cache_control) portico_res_header(res, "Cache-Control", opts->cache_control);
         res->status = 304;
         res->is_file = 0;
         return 0;
@@ -680,6 +681,7 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
     /* Responses depend on Accept-Encoding when compression is in play, so caches
      * must key on it. */
     if (opts->precompressed) portico_res_header(res, "Vary", "Accept-Encoding");
+    if (opts->cache_control) portico_res_header(res, "Cache-Control", opts->cache_control);
     if (is_range) {
         char cr[80];
         snprintf(cr, sizeof cr, "bytes %lld-%lld/%lld", start, start + length - 1, total);

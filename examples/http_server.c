@@ -112,6 +112,7 @@ int main(void) {
     g_static.url_prefix   = getenv("STATIC_PREFIX");     /* e.g. "/static"; NULL = mount at / */
     g_static.index        = getenv("STATIC_INDEX");      /* NULL = index.html */
     g_static.precompressed = getenv("STATIC_PRECOMPRESSED") != NULL;  /* serve .br/.gz */
+    g_static.cache_control = getenv("STATIC_CACHE_CONTROL");          /* e.g. "max-age=3600" */
 
     cb.on_binary_message = on_binary;
     cb.on_http_request   = on_http;

@@ -269,6 +269,10 @@ the foundation, built first as a standalone, isolation-tested library.
       file. Falls back to identity. No on-the-fly compression (precompress at build time).
       Tested (br preferred, gzip fallback, identity, .gz-only) across 3 backends,
       ASan-clean, suite 11/11.
+- [x] **Cache-Control** (`portico_static_opts_t.cache_control`) — optional header
+      emitted on file responses (and 304s), e.g. `public, max-age=31536000, immutable`
+      for fingerprinted assets. Per-route policy is the caller's (different opts per
+      mount). Conditional-GET revalidation still works alongside it.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 
