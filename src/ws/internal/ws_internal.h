@@ -14,6 +14,10 @@
  * Forward Declarations for Cross-Dependencies
  * ============================================================================ */
 
+/* Async file I/O instance (defined in portico_aio.h); per-event-thread, used by
+ * the static-file path. Opaque here — only a pointer is stored. */
+struct portico_aio;
+
 /* Return codes */
 #define WS_OK                     0
 #define WS_ERROR_INVALID_ARGS    -1
@@ -167,6 +171,11 @@ typedef struct {
     /* Inter-thread communication */
     int wakeup_eventfd;            /* eventfd for waking thread */
     ws_mpsc_queue_t *message_queue; /* Multi-producer, single-consumer queue */
+
+    /* Async file I/O for static serving. Its wakeup_fd is registered in this
+     * thread's epoll; readiness → portico_aio_drain() fires read completions on
+     * this (the owning) thread. NULL if creation failed (serving then 500s). */
+    struct portico_aio *aio;
     
     /* Thread-local buffer pools */
     ws_buffer_pool_t small_buffers;  /* Small buffers (1KB) */

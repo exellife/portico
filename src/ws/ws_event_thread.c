@@ -8,6 +8,7 @@
 #include "internal/ws_internal.h"
 #include "internal/ws_connection.h"
 #include "internal/ws_utils.h"
+#include "portico_aio.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -285,10 +286,37 @@ int ws_init_event_thread(ws_event_thread_t *thread, uint32_t thread_id,
     atomic_init(&thread->messages_processed, 0);
     thread->last_activity_time = time(NULL);
 
-    WS_DEBUG_LOG("Initialized event thread %u: epoll_fd=%d, max_conn=%u, buffers=(%d/%d/%d)", 
+    WS_DEBUG_LOG("Initialized event thread %u: epoll_fd=%d, max_conn=%u, buffers=(%d/%d/%d)",
                  thread_id, thread->epoll_fd, max_connections,
-                 config->small_buffer_count / 4, config->medium_buffer_count / 4, 
+                 config->small_buffer_count / 4, config->medium_buffer_count / 4,
                  config->large_buffer_count / 4);
+
+    /* Async file I/O for static serving (optional — failure is non-fatal; the
+     * static path simply 500s when thread->aio is NULL). Prefer io_uring, fall
+     * back to the threadpool. Its wakeup_fd joins this thread's epoll so read
+     * completions are drained on the connection-owning thread. */
+    {
+        portico_aio_cfg_t acfg = { .backend = PORTICO_AIO_IOURING };
+        thread->aio = portico_aio_create(&acfg);
+        if (!thread->aio) {
+            portico_aio_cfg_t tcfg = { .backend = PORTICO_AIO_THREADPOOL, .threads = 2 };
+            thread->aio = portico_aio_create(&tcfg);
+        }
+        if (thread->aio) {
+            struct epoll_event aev = {0};
+            aev.events = EPOLLIN | EPOLLET;
+            aev.data.fd = portico_aio_wakeup_fd(thread->aio);
+            if (epoll_ctl(thread->epoll_fd, EPOLL_CTL_ADD, aev.data.fd, &aev) < 0) {
+                WS_ERROR_LOG("Thread %u: failed to register aio wakeup fd: %s",
+                             thread_id, strerror(errno));
+                portico_aio_destroy(thread->aio);
+                thread->aio = NULL;
+            }
+        } else {
+            WS_ERROR_LOG("Thread %u: async file I/O unavailable — static serving disabled",
+                         thread_id);
+        }
+    }
 
     return WS_OK;
 }
@@ -345,6 +373,14 @@ void ws_cleanup_event_thread(ws_event_thread_t *thread) {
     if (thread->message_queue) {
         ws_mpsc_queue_destroy(thread->message_queue);
         thread->message_queue = NULL;
+    }
+
+    /* Destroy the async file I/O instance (joins its workers / waits out any
+     * in-flight reads). The worker thread is already joined above, so no drain
+     * can race this. */
+    if (thread->aio) {
+        portico_aio_destroy(thread->aio);
+        thread->aio = NULL;
     }
 
     /* Close event-related file descriptors */
@@ -528,6 +564,10 @@ void* ws_event_thread_worker(void *arg) {
                 if (total > 0) {
                     WS_DEBUG_LOG("Thread %u: Processed %d MPSC messages on wakeup", thread->thread_id, total);
                 }
+            } else if (thread->aio && fd == portico_aio_wakeup_fd(thread->aio)) {
+                /* Async file-read completions are ready — fire them on this thread
+                 * (each writes its file response to the parked connection). */
+                portico_aio_drain(thread->aio);
             } else {
                 /* Connection event - handle I/O. A single wakeup can carry
                  * several flags for one fd (EPOLLIN|EPOLLOUT|EPOLLHUP); once we

@@ -60,7 +60,7 @@ target_include_directories(portico
 # portico's own http/ code instead.
 set_source_files_properties(${PORTICO_WS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_options(portico PRIVATE -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(portico PUBLIC Threads::Threads picohttpparser)
+target_link_libraries(portico PUBLIC Threads::Threads picohttpparser portico_aio)
 if(PORTICO_TLS)
     target_link_libraries(portico PUBLIC OpenSSL::SSL OpenSSL::Crypto)
     target_compile_definitions(portico PUBLIC PORTICO_TLS=1)
