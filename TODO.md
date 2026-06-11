@@ -84,8 +84,10 @@ Optional follow-ups:
       h2-capable client uses 1.1 instead of attempting HTTP/2 (and clients that require
       an ALPN response get one). The hook for adding h2 later. Tested (s_client -alpn
       h2,http/1.1 → http/1.1).
-- [ ] **Built-in ACME client** (Let's Encrypt, RFC 8555) — IN PROGRESS, built bottom-up
-      so each layer is tested before the protocol leans on it. HTTP-01 first cut.
+- [x] **Built-in ACME client** (Let's Encrypt, RFC 8555) — DONE. Built bottom-up so each
+      layer was tested before the protocol leaned on it; HTTP-01. Proven end-to-end on a
+      public box (Oracle VM): a fully TRUSTED Let's Encrypt *production* cert issued for
+      a real domain and served on :443 (openssl Verify return code 0), auto-renewing.
       - [x] JSON (vendored cJSON in third_party) + base64url codec (src/acme/) — 16-case
             unit test (RFC 4648 vectors, URL-safe alphabet, round-trips, reject non-b64url),
             ASan-clean.
@@ -145,7 +147,11 @@ Optional follow-ups:
             responder bound IPv4-only, but the CA validated over IPv6 (AAAA) → now
             dual-stack (IPv6 + IPv4-mapped, IPv4 fallback). Self-skips if pebble absent;
             ASan-clean, suite 23/23.
-      - [ ] real e2e on a public domain (the Oracle Ampere VM): LE staging, then prod.
+      - [x] real e2e on a public domain — Oracle Free VM (E2.1.Micro x86, Ubuntu 24.04),
+            domain via DuckDNS, cert in /var/lib/portico, http_server bound to :443 with
+            CAP_NET_BIND_SERVICE. Verified against LE *staging* (issuer "(STAGING) …"),
+            then flipped to *production*: trusted chain, `openssl s_client` Verify code 0,
+            `curl https://…` 200 with no -k. Deploy runbook: docs/acme-deploy.md.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a
