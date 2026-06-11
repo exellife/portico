@@ -80,4 +80,76 @@ int portico_acme_jws(const portico_acme_key_t *k, const char *kid, const char *n
 int portico_acme_make_csr(const char *key_path, const char *const *domains,
                           size_t ndomains, char *out, size_t cap);
 
+/* HTTP-01 key authorization: token "." base64url(SHA-256(JWK)) — the exact bytes
+ * served at /.well-known/acme-challenge/<token>. Writes NUL-terminated; returns
+ * length or -1. */
+int portico_acme_key_authz(const portico_acme_key_t *k, const char *token,
+                           char *out, size_t cap);
+
+/* ---- ACME JSON document parsers (cJSON; pure, no network — unit-tested) -------
+ * Each extracts the fields the state machine needs from a server response body.
+ * Strings are written NUL-terminated into caller buffers; return 0 / -1. */
+
+/* Directory: the resource URLs. */
+int acme_parse_directory(const char *json, char *new_nonce, char *new_account,
+                         char *new_order, size_t cap);
+
+/* Order: status, the finalize URL, the certificate URL (empty until issued), and
+ * the authorization URLs (filled into `authz`, count into `n_authz`). */
+int acme_parse_order(const char *json, char *status, size_t sc,
+                     char *finalize, size_t fc, char *certificate, size_t cc,
+                     char authz[][512], size_t max_authz, size_t *n_authz);
+
+/* Authorization: status + the http-01 challenge's token and url. */
+int acme_parse_authz(const char *json, char *status, size_t sc,
+                     char *token, size_t tc, char *chal_url, size_t uc);
+
+/* ---- the RFC 8555 state machine -------------------------------------------
+ * A session ties an account key to a directory + trust store and tracks the
+ * Replay-Nonce and account `kid` across the flow. The steps are exposed so the
+ * staging smoke can drive account/order/authz directly; portico_acme_obtain()
+ * composes them into a full issuance. */
+typedef struct portico_acme_session portico_acme_session_t;
+
+/* `akey`, `ca_file` and `directory_url` are borrowed (caller keeps them alive and
+ * owns akey). `ca_file` NULL verifies against the system roots. */
+portico_acme_session_t *portico_acme_session_new(portico_acme_key_t *akey,
+                                                 const char *directory_url,
+                                                 const char *ca_file);
+void portico_acme_session_free(portico_acme_session_t *s);
+
+/* Fetch the directory and register/look-up the account (sets the kid every later
+ * request is signed under). `email` is an optional contact. Returns 0 / -1. */
+int portico_acme_connect(portico_acme_session_t *s, const char *email);
+
+/* Place a newOrder for `domains`; fills the order URL, finalize URL and the per-
+ * domain authorization URLs. Returns 0 / -1. */
+int portico_acme_order(portico_acme_session_t *s, const char *const *domains, size_t n,
+                       char *order_url, size_t ocap, char *finalize_url, size_t fcap,
+                       char authz_urls[][512], size_t max_authz, size_t *n_authz);
+
+/* Fetch one authorization (POST-as-GET); returns its status and http-01 token+url. */
+int portico_acme_http01(portico_acme_session_t *s, const char *authz_url,
+                        char *status, size_t sc, char *token, size_t tc,
+                        char *chal_url, size_t uc);
+
+/* Provisioning bridge to the HTTP-01 responder: serve `keyauth` at the well-known
+ * path for `token` until unprovisioned. */
+typedef struct {
+    const char *directory_url;      /* ACME directory (staging/production) */
+    const char *account_key_path;   /* account key PEM (load or create) */
+    const char *email;              /* optional contact, may be NULL */
+    const char *ca_file;            /* NULL = system roots */
+    void (*provision)(const char *token, const char *keyauth, void *ud);
+    void (*unprovision)(const char *token, void *ud);
+    void *ud;
+} portico_acme_config_t;
+
+/* Full issuance for `domains`: returns the certificate chain (PEM, malloc'd into
+ * *cert_pem — caller frees) and writes/uses the certificate key at `cert_key_path`.
+ * Returns 0 / -1. */
+int portico_acme_obtain(const portico_acme_config_t *cfg,
+                        const char *const *domains, size_t ndomains,
+                        const char *cert_key_path, char **cert_pem);
+
 #endif /* PORTICO_ACME_INTERNAL_H */

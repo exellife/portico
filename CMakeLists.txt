@@ -126,6 +126,12 @@ if(PORTICO_BUILD_TESTS)
     target_link_libraries(base64url_test PRIVATE portico_acme)
     add_test(NAME base64url COMMAND base64url_test)
 
+    # ACME JSON document parsers (directory/order/authz) + key authorization. Pure,
+    # offline — fixtures shaped like real Let's Encrypt responses, no network.
+    add_executable(acme_parse_test tests/acme_parse_test.c)
+    target_link_libraries(acme_parse_test PRIVATE portico_acme)
+    add_test(NAME acme_parse COMMAND acme_parse_test)
+
     # ACME account key + JWS/ES256 (only with TLS — needs OpenSSL). Known-answer JWK/
     # thumbprint + cryptographic signature verification.
     if(PORTICO_TLS)
@@ -194,6 +200,13 @@ if(PORTICO_BUILD_TESTS)
             add_test(NAME https_client
                 COMMAND bash ${CMAKE_SOURCE_DIR}/tests/https_client_test.sh
                         $<TARGET_FILE:http_server> $<TARGET_FILE:https_probe>)
+
+            # ACME state machine against Let's Encrypt STAGING (directory → account →
+            # order → authz). Self-skips unless PORTICO_ACME_STAGING=1, since it hits
+            # the network and registers a throwaway staging account.
+            add_executable(acme_staging_smoke tests/acme_staging_smoke.c)
+            target_link_libraries(acme_staging_smoke PRIVATE portico_acme)
+            add_test(NAME acme_staging COMMAND acme_staging_smoke)
         endif()
     endif()
 endif()

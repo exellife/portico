@@ -105,8 +105,16 @@ Optional follow-ups:
             Alternative Names, base64url(DER). Tested: decode → parse → X509_REQ_verify
             + all SANs present + key persisted 0600; cross-checked with the real
             `openssl req -verify` ("verify OK"). ASan-clean.
-      - [ ] ACME state machine (vs LE staging) → HTTP-01 responder
-            → storage/reload/renewal → e2e on a public domain.
+      - [x] ACME protocol state machine (src/acme/acme_client.c) — the RFC 8555 flow:
+            directory → newAccount (sets kid) → newOrder → fetch authz/select http-01 →
+            trigger → poll → finalize(CSR) → poll → download chain. Every authenticated
+            request a JWS POST with single-use Replay-Nonce tracking + badNonce retry;
+            POST-as-GET for reads. cJSON document parsers (directory/order/authz) +
+            key authorization unit-tested offline (21 cases, fixtures); the live machinery
+            VALIDATED against LE *staging* (acme_staging_smoke): real account registered,
+            order placed, a genuine http-01 token + key authz returned. ASan-clean, 20/20.
+            (Challenge validation + finalize need a public :80 → the e2e task.)
+      - [ ] HTTP-01 responder → storage/reload/renewal → e2e on a public domain.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a
