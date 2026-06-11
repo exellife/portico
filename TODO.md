@@ -133,8 +133,19 @@ Optional follow-ups:
             days-left/needs-renewal on in-process self-signed certs; manager skips the
             CA when the cert is current (responder up, on_renewed not fired) and fails
             fast when renewal is needed but the directory is unreachable. ASan/TSan-clean.
-      - [ ] local end-to-end against the Pebble test CA (full issue→finalize→download→
-            reload, offline, repeatable) → then real e2e on a public domain.
+      - [x] local end-to-end against the Pebble test CA (tests/acme_pebble_e2e.c +
+            acme_pebble_test.sh) — stands up pebble + pebble-challtestsrv on loopback and
+            drives the manager through the WHOLE loop: account → order → HTTP-01 (Pebble's
+            VA fetches the token from our responder) → finalize(CSR) → download → write,
+            then verifies the issued cert (SAN, CA-signed, pubkey matches the saved key).
+            First real exercise of the client's back half (finalize/poll-order/download/
+            chain) that staging couldn't reach. Surfaced + FIXED two real bugs: (a) the
+            HTTPS client dropped the non-default port from the Host header, so Pebble's
+            Host-derived directory URLs came back portless and unreachable; (b) the
+            responder bound IPv4-only, but the CA validated over IPv6 (AAAA) → now
+            dual-stack (IPv6 + IPv4-mapped, IPv4 fallback). Self-skips if pebble absent;
+            ASan-clean, suite 23/23.
+      - [ ] real e2e on a public domain (the Oracle Ampere VM): LE staging, then prod.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a

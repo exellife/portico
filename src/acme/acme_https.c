@@ -166,19 +166,25 @@ int portico_https_request(const char *method, const char *url, const char *ca_fi
     if (SSL_set1_host(ssl, host) != 1) goto done;     /* verify cert matches hostname */
     if (SSL_connect(ssl) != 1) goto done;             /* handshake + full verification */
 
-    /* Build + send the request. */
+    /* Build + send the request. The Host header MUST carry a non-default port — some
+     * ACME servers (e.g. Pebble) build their directory's resource URLs from it, so
+     * dropping ":14000" yields portless URLs that then fail to connect. */
+    char host_hdr[280];
+    if (strcmp(port, "443") == 0) snprintf(host_hdr, sizeof host_hdr, "%s", host);
+    else                          snprintf(host_hdr, sizeof host_hdr, "%s:%s", host, port);
+
     char head[4096];
     int hn;
     if (body)
         hn = snprintf(head, sizeof head,
             "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: portico-acme\r\n%s"
             "Content-Length: %zu\r\nConnection: close\r\n\r\n",
-            method, path, host, headers ? headers : "", body_len);
+            method, path, host_hdr, headers ? headers : "", body_len);
     else
         hn = snprintf(head, sizeof head,
             "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: portico-acme\r\n%s"
             "Connection: close\r\n\r\n",
-            method, path, host, headers ? headers : "");
+            method, path, host_hdr, headers ? headers : "");
     if (hn <= 0 || (size_t)hn >= sizeof head) goto done;
     if (SSL_write(ssl, head, hn) != hn) goto done;
     if (body && body_len && SSL_write(ssl, body, (int)body_len) != (int)body_len) goto done;

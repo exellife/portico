@@ -219,6 +219,15 @@ if(PORTICO_BUILD_TESTS)
             add_executable(acme_staging_smoke tests/acme_staging_smoke.c)
             target_link_libraries(acme_staging_smoke PRIVATE portico_acme)
             add_test(NAME acme_staging COMMAND acme_staging_smoke)
+
+            # ACME full loop against a LOCAL Pebble test CA: issue → HTTP-01 validate →
+            # finalize → download → verify, offline + repeatable. Self-skips if pebble +
+            # pebble-challtestsrv aren't installed (see tests/acme_pebble_test.sh).
+            add_executable(acme_pebble_e2e tests/acme_pebble_e2e.c)
+            target_link_libraries(acme_pebble_e2e PRIVATE portico_acme)
+            add_test(NAME acme_pebble
+                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/acme_pebble_test.sh
+                        $<TARGET_FILE:acme_pebble_e2e>)
         endif()
     endif()
 endif()

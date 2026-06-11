@@ -161,20 +161,40 @@ static void *serve_thread(void *arg) {
 int portico_acme_responder_listen(portico_acme_responder_t *r, int port) {
     if (!r || r->running) return -1;
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-
-    struct sockaddr_in a = {0};
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_ANY);
-    a.sin_port = htons((uint16_t)port);
-    if (bind(fd, (struct sockaddr *)&a, sizeof a) != 0 || listen(fd, 16) != 0) { close(fd); return -1; }
-
-    socklen_t al = sizeof a;
-    if (getsockname(fd, (struct sockaddr *)&a, &al) != 0) { close(fd); return -1; }
-    int bound = ntohs(a.sin_port);
+    /* Prefer a dual-stack IPv6 socket so the CA can validate over EITHER family: a
+     * domain may publish an AAAA record and the CA (Let's Encrypt does) may then
+     * prefer IPv6 — an IPv4-only responder would refuse that connection and fail the
+     * challenge. Fall back to IPv4-only where IPv6 is unavailable. */
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    int bound = -1;
+    if (fd >= 0) {
+        int one = 1, zero = 0;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof zero);   /* accept IPv4-mapped too */
+        struct sockaddr_in6 a6 = {0};
+        a6.sin6_family = AF_INET6;
+        a6.sin6_addr = in6addr_any;
+        a6.sin6_port = htons((uint16_t)port);
+        if (bind(fd, (struct sockaddr *)&a6, sizeof a6) == 0 && listen(fd, 16) == 0) {
+            socklen_t al = sizeof a6;
+            if (getsockname(fd, (struct sockaddr *)&a6, &al) == 0) bound = ntohs(a6.sin6_port);
+        }
+        if (bound < 0) { close(fd); fd = -1; }
+    }
+    if (fd < 0) {
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return -1;
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        struct sockaddr_in a4 = {0};
+        a4.sin_family = AF_INET;
+        a4.sin_addr.s_addr = htonl(INADDR_ANY);
+        a4.sin_port = htons((uint16_t)port);
+        if (bind(fd, (struct sockaddr *)&a4, sizeof a4) != 0 || listen(fd, 16) != 0) { close(fd); return -1; }
+        socklen_t al = sizeof a4;
+        if (getsockname(fd, (struct sockaddr *)&a4, &al) != 0) { close(fd); return -1; }
+        bound = ntohs(a4.sin_port);
+    }
 
     int ev = eventfd(0, EFD_NONBLOCK);
     if (ev < 0) { close(fd); return -1; }
