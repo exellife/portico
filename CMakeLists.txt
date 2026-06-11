@@ -46,6 +46,18 @@ add_library(picohttpparser STATIC third_party/picohttpparser/picohttpparser.c)
 target_include_directories(picohttpparser PUBLIC third_party/picohttpparser)
 target_compile_options(picohttpparser PRIVATE -w)
 
+add_library(cjson STATIC third_party/cjson/cJSON.c)
+target_include_directories(cjson PUBLIC third_party/cjson/include)
+target_compile_options(cjson PRIVATE -w)
+
+# --- ACME client (RFC 8555), built incrementally; depends only on libc + cJSON
+# (OpenSSL added when the HTTPS client / JWS crypto land). ---
+file(GLOB PORTICO_ACME_SOURCES CONFIGURE_DEPENDS src/acme/*.c)
+add_library(portico_acme STATIC ${PORTICO_ACME_SOURCES})
+target_include_directories(portico_acme PUBLIC include src/acme)
+target_compile_options(portico_acme PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_link_libraries(portico_acme PUBLIC cjson)
+
 # --- portico library ---
 file(GLOB PORTICO_WS_SOURCES   CONFIGURE_DEPENDS src/ws/*.c)
 file(GLOB PORTICO_HTTP_SOURCES CONFIGURE_DEPENDS src/http/*.c)
@@ -104,6 +116,11 @@ if(PORTICO_BUILD_TESTS)
     add_executable(aio_test tests/aio_test.c)
     target_link_libraries(aio_test PRIVATE portico_aio)
     add_test(NAME aio COMMAND aio_test)
+
+    # ACME base64url codec + cJSON vendoring sanity (pure C, no network).
+    add_executable(base64url_test tests/base64url_test.c)
+    target_link_libraries(base64url_test PRIVATE portico_acme)
+    add_test(NAME base64url COMMAND base64url_test)
 
     find_program(PYTHON3 python3)
     if(PYTHON3 AND PORTICO_BUILD_EXAMPLES)

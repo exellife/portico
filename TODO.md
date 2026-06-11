@@ -84,7 +84,15 @@ Optional follow-ups:
       h2-capable client uses 1.1 instead of attempting HTTP/2 (and clients that require
       an ALPN response get one). The hook for adding h2 later. Tested (s_client -alpn
       h2,http/1.1 → http/1.1).
-- [ ] Optional ACME, or document Caddy as the zero-code alternative for easy auto-HTTPS.
+- [ ] **Built-in ACME client** (Let's Encrypt, RFC 8555) — IN PROGRESS, built bottom-up
+      so each layer is tested before the protocol leans on it. HTTP-01 first cut.
+      - [x] JSON (vendored cJSON in third_party) + base64url codec (src/acme/) — 16-case
+            unit test (RFC 4648 vectors, URL-safe alphabet, round-trips, reject non-b64url),
+            ASan-clean.
+      - [ ] verifying HTTPS client → JWS/ES256 → CSR → ACME state machine (vs LE staging)
+            → HTTP-01 responder → storage/reload/renewal → e2e on a public domain.
+      (External certbot --webroot remains the works-today alternative; Caddy is the
+      reference for a server with built-in ACME.)
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a
       request to a per-host static config by the Host header: strips `:port`, matches
       case-insensitively (exact or `*.` wildcard), serves via portico_res_static. A
