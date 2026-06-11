@@ -3,6 +3,7 @@
  *   - WebSocket binary echo (so the same binary exercises both harnesses)
  */
 #include "portico.h"
+#include "acme_internal.h"   /* built-in ACME (Let's Encrypt) — opt-in via ACME_DOMAINS */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,7 @@
 #include <string.h>
 
 static ws_server_t *g_server = NULL;
+static portico_acme_manager_t *g_acme = NULL;   /* NULL unless ACME_DOMAINS is set */
 static volatile sig_atomic_t g_running = 1;
 static portico_static_opts_t g_static;   /* STATIC_ROOT/STATIC_PREFIX, from main */
 static portico_vhost_t g_vhosts[16];      /* VHOSTS="host:docroot;..." */
@@ -79,6 +81,63 @@ static volatile sig_atomic_t g_reload = 0;
 static void on_signal(int s) { (void)s; g_running = 0; }
 static void on_hup(int s)    { (void)s; g_reload = 1; }   /* SIGHUP → reload TLS certs */
 
+/* ACME renewed the cert on disk (called from the manager's renewal thread — a normal
+ * context, not a signal handler): hot-swap it in with zero downtime. Guards g_server
+ * because the very first issuance happens before the server is created. */
+static void on_cert_renewed(void *ud) {
+    (void)ud;
+    if (g_server) ws_server_reload_tls(g_server);
+}
+
+/* Opt-in ACME: ACME_DOMAINS="a.com,b.com" turns the server into its own CA client —
+ * it obtains/renews a real certificate and serves HTTP-01 challenges on :80 itself.
+ * Returns 0 (continue) or -1 (fatal). On success, points cfg's TLS paths at the
+ * issued files. Other knobs: ACME_EMAIL, ACME_DIRECTORY (default LE staging),
+ * ACME_CA_FILE (trust override, e.g. Pebble), ACME_CHALLENGE_PORT (default 80),
+ * ACME_CERT/ACME_CERT_KEY/ACME_ACCOUNT_KEY paths, ACME_RENEW_DAYS, ACME_CHECK_INTERVAL. */
+static int acme_maybe_start(ws_config_t *cfg) {
+    char *ad = getenv("ACME_DOMAINS");
+    if (!ad || !*ad) return 0;                       /* not enabled */
+
+    static const char *domains[16];
+    static char dbuf[1024];
+    snprintf(dbuf, sizeof dbuf, "%s", ad);
+    size_t nd = 0;
+    for (char *t = strtok(dbuf, ","); t && nd < 16; t = strtok(NULL, ",")) domains[nd++] = t;
+
+    static char cert[512], ckey[512];
+    const char *c = getenv("ACME_CERT");     snprintf(cert, sizeof cert, "%s", c ? c : "acme-cert.pem");
+    const char *k = getenv("ACME_CERT_KEY"); snprintf(ckey, sizeof ckey, "%s", k ? k : "acme-cert.key");
+    const char *dir = getenv("ACME_DIRECTORY");
+    const char *cp  = getenv("ACME_CHALLENGE_PORT");
+    const char *ci  = getenv("ACME_CHECK_INTERVAL");
+    const char *rd  = getenv("ACME_RENEW_DAYS");
+
+    portico_acme_manager_config_t ac = {
+        .directory_url    = dir ? dir : "https://acme-staging-v02.api.letsencrypt.org/directory",
+        .account_key_path = getenv("ACME_ACCOUNT_KEY") ? getenv("ACME_ACCOUNT_KEY") : "acme-account.key",
+        .cert_path        = cert,
+        .cert_key_path    = ckey,
+        .email            = getenv("ACME_EMAIL"),
+        .ca_file          = getenv("ACME_CA_FILE"),
+        .domains          = domains,
+        .ndomains         = nd,
+        .renew_within_days   = rd ? atoi(rd) : 30,
+        .challenge_port      = cp ? atoi(cp) : 80,
+        .check_interval_secs = ci ? atoi(ci) : 0,
+        .on_renewed       = on_cert_renewed,
+    };
+    fprintf(stderr, "acme: obtaining a certificate for '%s' via %s ...\n", ad, ac.directory_url);
+    g_acme = portico_acme_manager_start(&ac);
+    if (!g_acme) { fprintf(stderr, "acme: initial issuance failed\n"); return -1; }
+    fprintf(stderr, "acme: certificate ready (%s); HTTP-01 challenges on :%d\n",
+            cert, portico_acme_manager_challenge_port(g_acme));
+
+    cfg->tls_cert_file = cert;                       /* serve TLS from the issued files */
+    cfg->tls_key_file  = ckey;
+    return 0;
+}
+
 int main(void) {
     const char *p = getenv("PORT");
     int port = (p && *p) ? atoi(p) : 8080;
@@ -129,6 +188,10 @@ int main(void) {
         cfg.tls_sni_cert_count = sni_n;
     }
 
+    /* Built-in ACME (opt-in): issues/renews a real cert and overrides the TLS paths
+     * above. Must run before create() so the listener starts with a valid cert. */
+    if (acme_maybe_start(&cfg) != 0) return 1;
+
     g_server = ws_server_create(&cfg);
     if (!g_server) { fprintf(stderr, "create failed\n"); return 1; }
 
@@ -171,6 +234,7 @@ int main(void) {
         pause();                                  /* wakes on any signal */
         if (g_reload) { g_reload = 0; ws_server_reload_tls(g_server); }
     }
+    if (g_acme) portico_acme_manager_stop(g_acme);   /* stop renewals + the :80 responder */
     ws_server_destroy(g_server);
     return 0;
 }

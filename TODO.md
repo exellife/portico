@@ -122,7 +122,19 @@ Optional follow-ups:
             (provision/lookup/unprovision, path + token edge cases) + the standalone
             listener exercised over a real loopback HTTP GET (200 + exact keyauth
             body / 404). ASan- and TSan-clean.
-      - [ ] storage + reload hookup + renewal scheduler → e2e on a public domain.
+      - [x] storage + reload hookup + renewal scheduler (src/acme/acme_manager.c) — a
+            sidecar manager: keeps a current cert on disk for the domains, owns its own
+            HTTP-01 :80 responder (no core acceptor surgery), issues synchronously on
+            startup, and a background thread renews ahead of expiry. Couples back to the
+            server ONLY through an on_renewed callback (dependency arrow stays portico →
+            portico_acme); the example wires it to ws_server_reload_tls() for zero-
+            downtime swap. Cert expiry read from X509 notAfter. Opt-in via ACME_DOMAINS
+            in examples/http_server.c. Tested (acme_manager_test, 16 cases, NO CA):
+            days-left/needs-renewal on in-process self-signed certs; manager skips the
+            CA when the cert is current (responder up, on_renewed not fired) and fails
+            fast when renewal is needed but the directory is unreachable. ASan/TSan-clean.
+      - [ ] local end-to-end against the Pebble test CA (full issue→finalize→download→
+            reload, offline, repeatable) → then real e2e on a public domain.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a

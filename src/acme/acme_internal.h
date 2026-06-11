@@ -180,4 +180,53 @@ int portico_acme_responder_lookup(portico_acme_responder_t *r, const char *path,
 int  portico_acme_responder_listen(portico_acme_responder_t *r, int port);
 void portico_acme_responder_stop(portico_acme_responder_t *r);
 
+/* ---- certificate expiry + the issue/renew manager -------------------------
+ * Ties the pieces together: keep a current certificate on disk for `domains`,
+ * serving HTTP-01 challenges on its OWN plaintext listener (a sidecar alongside
+ * portico's TLS listener — no core surgery), and renew before expiry, signalling
+ * the app to hot-reload via a callback. The callback keeps the dependency arrow
+ * one-way (portico → portico_acme): the manager never calls into the server, the
+ * app wires on_renewed to ws_server_reload_tls(). */
+
+/* Whole days until the leaf cert in the PEM at `cert_path` expires (negative if
+ * already expired), or -1 if the file is missing / unreadable / unparseable. */
+int portico_acme_cert_days_left(const char *cert_path);
+
+/* True if that cert is missing, unparseable, expired, or within `renew_within_days`
+ * of expiry — i.e. it should be (re)issued now. */
+int portico_acme_cert_needs_renewal(const char *cert_path, int renew_within_days);
+
+typedef struct {
+    const char        *directory_url;      /* ACME directory (staging/production) */
+    const char        *account_key_path;   /* account key PEM (load or create) */
+    const char        *cert_path;          /* issued chain (PEM) is written here */
+    const char        *cert_key_path;      /* certificate key is written here */
+    const char        *email;              /* optional contact */
+    const char        *ca_file;            /* NULL = system roots; set for Pebble */
+    const char *const *domains;            /* borrowed; caller keeps it alive */
+    size_t             ndomains;
+    int                renew_within_days;   /* renew when fewer days remain (0 ⇒ 30) */
+    int                challenge_port;      /* 80 in production; 0 ⇒ ephemeral (tests) */
+    int                check_interval_secs; /* renewal poll period (0 ⇒ 12h) */
+    void             (*on_renewed)(void *ud);   /* fired after a successful (re)issue */
+    void              *ud;
+} portico_acme_manager_config_t;
+
+typedef struct portico_acme_manager portico_acme_manager_t;
+
+/* Bring up the HTTP-01 responder, ensure a current cert exists NOW (issuing
+ * synchronously if it is missing/expiring), then start the background renewal
+ * thread. Returns the manager, or NULL (e.g. issuance was needed and failed). */
+portico_acme_manager_t *portico_acme_manager_start(const portico_acme_manager_config_t *cfg);
+
+/* One pass: (re)issue if the cert needs renewal — serving challenges, writing
+ * cert+key to disk, firing on_renewed — else leave it. 1 = reissued, 0 = still
+ * current, -1 = error. Run by start() and the renewal thread; safe to call too. */
+int portico_acme_manager_ensure(portico_acme_manager_t *m);
+
+/* The plaintext port the responder bound (useful when challenge_port was 0). */
+int portico_acme_manager_challenge_port(const portico_acme_manager_t *m);
+
+void portico_acme_manager_stop(portico_acme_manager_t *m);
+
 #endif /* PORTICO_ACME_INTERNAL_H */

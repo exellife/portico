@@ -105,7 +105,7 @@ if(PORTICO_BUILD_EXAMPLES)
     add_executable(echo_server examples/echo_server.c)
     target_link_libraries(echo_server PRIVATE portico)
     add_executable(http_server examples/http_server.c)
-    target_link_libraries(http_server PRIVATE portico)
+    target_link_libraries(http_server PRIVATE portico portico_acme)
     add_executable(autobahn_server examples/autobahn_server.c)
     target_link_libraries(autobahn_server PRIVATE portico)
     add_executable(stress_server examples/stress_server.c)
@@ -149,6 +149,12 @@ if(PORTICO_BUILD_TESTS)
         add_executable(csr_test tests/csr_test.c)
         target_link_libraries(csr_test PRIVATE portico_acme)
         add_test(NAME csr COMMAND csr_test)
+
+        # ACME manager: cert-expiry logic + the issue/renew sidecar (CA-free paths —
+        # mints self-signed certs in-process; full issuance is the Pebble test).
+        add_executable(acme_manager_test tests/acme_manager_test.c)
+        target_link_libraries(acme_manager_test PRIVATE portico_acme)
+        add_test(NAME acme_manager COMMAND acme_manager_test)
     endif()
 
     find_program(PYTHON3 python3)
