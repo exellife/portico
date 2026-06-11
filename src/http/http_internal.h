@@ -20,9 +20,11 @@ struct portico_response {
     int    keep_alive;                          /* inherited from request */
     int    content_type_set;
     /* Static file serving (set by portico_res_file). When is_file is set, the
-     * body is the contents of file_fd (served via an async read), not `body`. */
+     * body is `file_size` bytes of file_fd starting at file_offset (served via an
+     * async read), not `body`. file_offset/file_size also express a byte Range. */
     int       is_file;
     int       file_fd;
+    long long file_offset;
     long long file_size;
 };
 

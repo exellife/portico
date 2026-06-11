@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>   /* inet_pton — validate proxy-supplied client IPs (M-8) */
@@ -41,7 +42,7 @@ typedef struct http_stream {
     int                file_fd;
     uint8_t           *buf;          /* one chunk (PORTICO_STREAM_CHUNK) */
     long long          offset;       /* next file offset to read */
-    long long          size;         /* total file size (== Content-Length) */
+    long long          end;          /* one past the last byte to serve (start+length) */
     int                keep_alive;
     int                reading;       /* an aio read is in flight for this stream */
 } http_stream_t;
@@ -317,6 +318,84 @@ static void url_decode_path(const char *s, size_t n, char *out, size_t cap, size
     *outlen = o;
 }
 
+/* RFC 1123 HTTP-date, English/locale-independent (strftime's %a/%b are localized). */
+static void http_date(time_t t, char *out, size_t cap) {
+    static const char *D[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    static const char *M[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                              "Jul","Aug","Sep","Oct","Nov","Dec"};
+    struct tm tm; gmtime_r(&t, &tm);
+    snprintf(out, cap, "%s, %02d %s %04d %02d:%02d:%02d GMT",
+             D[tm.tm_wday], tm.tm_mday, M[tm.tm_mon], tm.tm_year + 1900,
+             tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
+/* Parse an RFC 1123 HTTP-date; (time_t)-1 on failure. */
+static time_t parse_http_date(const char *s) {
+    struct tm tm; memset(&tm, 0, sizeof tm);
+    if (!strptime(s, "%a, %d %b %Y %H:%M:%S GMT", &tm)) return (time_t)-1;
+    return timegm(&tm);
+}
+
+/* Strong validator: "<mtime_sec>-<mtime_nsec>-<size>" (quoted). */
+static void file_etag(const struct stat *st, char *out, size_t cap) {
+    snprintf(out, cap, "\"%llx-%llx-%llx\"",
+             (unsigned long long)st->st_mtim.tv_sec,
+             (unsigned long long)st->st_mtim.tv_nsec,
+             (unsigned long long)st->st_size);
+}
+
+/* True if an If-None-Match header `hdr` matches `etag` ("*" matches anything;
+ * comma list; a leading weak "W/" marker is ignored for the comparison). */
+static int etag_matches(const char *hdr, const char *etag) {
+    if (strchr(hdr, '*')) return 1;
+    for (const char *p = hdr; *p; ) {
+        while (*p == ' ' || *p == ',' || *p == '\t') p++;
+        if (p[0] == 'W' && p[1] == '/') p += 2;
+        if (*p && strncmp(p, etag, strlen(etag)) == 0) return 1;
+        while (*p && *p != ',') p++;
+    }
+    return 0;
+}
+
+/* Parse a single "bytes=" range against `size`. Returns 0 satisfiable (sets
+ * start and len), 1 unsatisfiable (416), or -1 ignore-and-serve-full (200). */
+static int parse_range(const char *v, long long size, long long *start, long long *len) {
+    if (strncmp(v, "bytes=", 6) != 0) return -1;
+    v += 6;
+    if (strchr(v, ',')) return -1;                /* multiple ranges → serve full */
+    const char *dash = strchr(v, '-');
+    if (!dash) return -1;
+    long long s, e; char *end;
+    if (dash == v) {                              /* "-N": final N bytes */
+        long long suf = strtoll(v + 1, &end, 10);
+        if (end == v + 1 || *end != '\0' || suf <= 0) return -1;
+        if (suf > size) suf = size;
+        s = size - suf; e = size - 1;
+    } else {
+        s = strtoll(v, &end, 10);
+        if (end != dash || s < 0) return -1;
+        if (dash[1] == '\0') {
+            e = size - 1;
+        } else {
+            e = strtoll(dash + 1, &end, 10);
+            if (*end != '\0' || e < 0) return -1;
+            if (e >= size) e = size - 1;
+        }
+    }
+    if (size == 0 || s >= size || s > e) return 1; /* unsatisfiable → 416 */
+    *start = s; *len = e - s + 1;
+    return 0;
+}
+
+/* Copy a request header value into a NUL-terminated buffer; 1 if present. */
+static int req_header_copy(const portico_request_t *req, const char *name, char *out, size_t cap) {
+    size_t vlen = 0;
+    const char *v = portico_req_header(req, name, &vlen);
+    if (!v || vlen == 0 || vlen >= cap) { out[0] = '\0'; return 0; }
+    memcpy(out, v, vlen); out[vlen] = '\0';
+    return 1;
+}
+
 int portico_res_file(portico_response_t *res, const portico_request_t *req, const char *docroot) {
     if (!res || !req || !docroot) { if (res) res->status = 500; return -1; }
 
@@ -348,11 +427,74 @@ int portico_res_file(portico_response_t *res, const portico_request_t *req, cons
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { close(fd); res->status = 404; return -1; }
     if (st.st_size > PORTICO_FILE_MAX) { close(fd); res->status = 413; return -1; }
 
+    /* Validators for conditional + range requests. */
+    char etag[64], lastmod[40], hbuf[256];
+    file_etag(&st, etag, sizeof etag);
+    http_date(st.st_mtim.tv_sec, lastmod, sizeof lastmod);
+    long long total = (long long)st.st_size;
+
+    /* Conditional GET (RFC 7232): If-None-Match wins over If-Modified-Since; a
+     * match → 304 Not Modified (no body — the client's cache is current). */
+    int not_modified = 0;
+    if (req_header_copy(req, "If-None-Match", hbuf, sizeof hbuf)) {
+        if (etag_matches(hbuf, etag)) not_modified = 1;
+    } else if (req_header_copy(req, "If-Modified-Since", hbuf, sizeof hbuf)) {
+        time_t ims = parse_http_date(hbuf);
+        if (ims != (time_t)-1 && st.st_mtim.tv_sec <= ims) not_modified = 1;
+    }
+    if (not_modified) {
+        close(fd);
+        portico_res_header(res, "ETag", etag);
+        portico_res_header(res, "Last-Modified", lastmod);
+        res->status = 304;
+        res->is_file = 0;
+        return 0;
+    }
+
+    /* Range (RFC 7233): honor it unless an If-Range validator shows the client's
+     * cached partial is stale, in which case serve the full 200 instead. */
+    long long start = 0, length = total;
+    int is_range = 0;
+    if (req_header_copy(req, "Range", hbuf, sizeof hbuf)) {
+        int honor = 1;
+        char ir[256];
+        if (req_header_copy(req, "If-Range", ir, sizeof ir)) {
+            if (ir[0] == '"' || (ir[0] == 'W' && ir[1] == '/'))
+                honor = (strstr(ir, etag) != NULL);          /* etag validator */
+            else { time_t d = parse_http_date(ir); honor = (d != (time_t)-1 && st.st_mtim.tv_sec <= d); }
+        }
+        if (honor) {
+            long long rs, rl;
+            int rr = parse_range(hbuf, total, &rs, &rl);
+            if (rr == 0) { start = rs; length = rl; is_range = 1; }
+            else if (rr == 1) {                              /* 416 Range Not Satisfiable */
+                close(fd);
+                char cr[64]; snprintf(cr, sizeof cr, "bytes */%lld", total);
+                portico_res_header(res, "Content-Range", cr);
+                portico_res_header(res, "Accept-Ranges", "bytes");
+                res->status = 416; res->is_file = 0;
+                return -1;
+            }
+            /* rr == -1: malformed/multi range → ignore, serve full */
+        }
+    }
+
+    portico_res_header(res, "Content-Type", content_type_for(resolved));
+    portico_res_header(res, "Accept-Ranges", "bytes");
+    portico_res_header(res, "ETag", etag);
+    portico_res_header(res, "Last-Modified", lastmod);
+    if (is_range) {
+        char cr[80];
+        snprintf(cr, sizeof cr, "bytes %lld-%lld/%lld", start, start + length - 1, total);
+        portico_res_header(res, "Content-Range", cr);
+        res->status = 206;     /* Partial Content */
+    } else {
+        res->status = 200;
+    }
     res->is_file = 1;
     res->file_fd = fd;
-    res->file_size = (long long)st.st_size;
-    portico_res_header(res, "Content-Type", content_type_for(resolved));
-    res->status = 200;
+    res->file_offset = start;
+    res->file_size = length;   /* bytes to serve (range length, or full size) */
     return 0;
 }
 
@@ -478,9 +620,9 @@ static int stream_advance(http_stream_t *s) {
     if (s->reading) return 0;                              /* a read is already in flight */
     for (;;) {
         if (conn->out_used > conn->out_sent) return 0;     /* socket backed up: wait EPOLLOUT */
-        if (s->offset >= s->size) return stream_finish(s); /* done */
+        if (s->offset >= s->end) return stream_finish(s);  /* done */
 
-        size_t want = (size_t)(s->size - s->offset);
+        size_t want = (size_t)(s->end - s->offset);
         if (want > PORTICO_STREAM_CHUNK) want = PORTICO_STREAM_CHUNK;
 
         if (s->thread->aio) {
@@ -522,7 +664,7 @@ static void stream_chunk_complete(void *user, ssize_t nread) {
         rc = stream_fail(s);
     } else {
         s->offset += nread;
-        rc = (s->offset >= s->size) ? stream_finish(s) : stream_advance(s);
+        rc = (s->offset >= s->end) ? stream_finish(s) : stream_advance(s);
     }
     /* s is freed by now if rc < 0 (or if it finished); only touch `conn`. */
     if (rc < 0) {
@@ -540,8 +682,10 @@ static int stream_start(ws_event_thread_t *thread, ws_connection_t *conn,
     uint8_t *buf = s ? malloc(PORTICO_STREAM_CHUNK) : NULL;
     if (!s || !buf) { free(s); free(buf); close(res->file_fd); return http_error_close(thread, conn, 500); }
     s->thread = thread; s->conn = conn; s->generation = conn->generation;
-    s->file_fd = res->file_fd; s->buf = buf; s->offset = 0;
-    s->size = res->file_size; s->keep_alive = res->keep_alive; s->reading = 0;
+    s->file_fd = res->file_fd; s->buf = buf;
+    s->offset = res->file_offset;                 /* range start (0 for a full file) */
+    s->end = res->file_offset + res->file_size;   /* one past the last byte to serve */
+    s->keep_alive = res->keep_alive; s->reading = 0;
 
     /* Consume this request (park the connection). */
     if (consumed < conn->recv_buffer_used) {
@@ -557,7 +701,7 @@ static int stream_start(ws_event_thread_t *thread, ws_connection_t *conn,
     int hn = snprintf(hdr, sizeof hdr,
         "HTTP/1.1 %d %s\r\n%.*sContent-Length: %lld\r\nConnection: %s\r\n\r\n",
         res->status, portico_http_reason(res->status),
-        (int)res->headers_len, res->headers, s->size,
+        (int)res->headers_len, res->headers, res->file_size,
         res->keep_alive ? "keep-alive" : "close");
     if (hn < 0 || (size_t)hn >= sizeof hdr) { stream_free(s); return http_error_close(thread, conn, 500); }
 
@@ -622,7 +766,7 @@ static int http_serve_file(ws_event_thread_t *thread, ws_connection_t *conn,
 
     if (thread->aio) {
         conn->http_async_inflight = 1;
-        if (portico_aio_pread(thread->aio, ctx->file_fd, buf, size, 0,
+        if (portico_aio_pread(thread->aio, ctx->file_fd, buf, size, res->file_offset,
                               file_read_complete, ctx) == 0)
             return 0;   /* parked — completion responds + resumes */
         conn->http_async_inflight = 0;   /* submit refused → fall through */
@@ -631,7 +775,7 @@ static int http_serve_file(ws_event_thread_t *thread, ws_connection_t *conn,
     /* Synchronous fallback (no aio, or submit refused): read inline, respond, and
      * tell the caller's loop whether to continue (keep-alive) or close. */
     ssize_t n;
-    do { n = pread(ctx->file_fd, buf, size, 0); } while (n < 0 && errno == EINTR);
+    do { n = pread(ctx->file_fd, buf, size, res->file_offset); } while (n < 0 && errno == EINTR);
     int close_it = file_emit(thread, conn, ctx, n);
     close(ctx->file_fd); free(ctx->buf); free(ctx);
     if (close_it) return http_finish_close(conn);   /* 0 deferred, -1 now */

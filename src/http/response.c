@@ -47,6 +47,8 @@ const char *portico_http_reason(int status) {
         case 200: return "OK";
         case 201: return "Created";
         case 204: return "No Content";
+        case 206: return "Partial Content";
+        case 304: return "Not Modified";
         case 400: return "Bad Request";
         case 401: return "Unauthorized";
         case 403: return "Forbidden";
@@ -55,6 +57,7 @@ const char *portico_http_reason(int status) {
         case 409: return "Conflict";
         case 413: return "Payload Too Large";
         case 414: return "URI Too Long";
+        case 416: return "Range Not Satisfiable";
         case 431: return "Request Header Fields Too Large";
         case 500: return "Internal Server Error";
         case 501: return "Not Implemented";

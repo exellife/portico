@@ -201,9 +201,22 @@ the foundation, built first as a standalone, isolation-tested library.
       won't kill it; a stalled reader still times out. Tested: 1.5 MB byte-exact,
       keep-alive after a streamed response, mid-stream client disconnect survival,
       16 concurrent streams — across all 3 backends, ASan-clean, suite 11/11.
-      Follow-ups: HTTP Range (seeking — the key video feature, and "streaming with a
-      start offset" given this foundation), ETag/Last-Modified + conditional GET,
-      directory index, prefix stripping, read-ahead (double-buffer) for throughput.
+- [x] **HTTP Range + conditional GET** (src/http/connection.c) — `portico_res_file`
+      now computes validators (strong **ETag** from mtime+size, **Last-Modified**)
+      and evaluates the conditional/range headers before serving:
+      • **Range** (RFC 7233): single `bytes=N-M`, `N-`, `-N` → `206 Partial Content`
+        with `Content-Range`; unsatisfiable → `416`; `Accept-Ranges: bytes`
+        advertised. Implemented as the streaming/single-read path with a start
+        offset + length, so a ranged read of a huge file only touches that window.
+      • **Conditional** (RFC 7232): `If-None-Match` / `If-Modified-Since` → `304 Not
+        Modified` (no body); `If-Range` serves the range only if the validator still
+        matches, else the full body. This is what makes video **seeking** work and
+        gives browsers cache revalidation — i.e. portico can now be an HLS/DASH
+        origin. Tested: 13 Range/conditional assertions (offsets, suffix, 416, 304,
+        If-Range match/mismatch, ranged streamed file) across all 3 backends,
+        ASan-clean, suite 11/11.
+      Follow-ups: multipart/byteranges (multi-range), directory index, URL-prefix
+      stripping, HEAD, read-ahead (double-buffer) for streaming throughput.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 

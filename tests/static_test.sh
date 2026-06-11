@@ -19,6 +19,7 @@ mkdir -p "$ROOT/assets"
 printf 'body{color:red}'             > "$ROOT/assets/site.css"
 head -c 250000 /dev/urandom          > "$ROOT/big.bin"
 head -c 1500000 /dev/urandom         > "$ROOT/stream.bin"   # > 256KB → streamed (chunked)
+python3 -c "open('$ROOT/f.txt','wb').write(bytes(range(256))*20)"   # 5120 predictable bytes
 # A symlink pointing outside the docroot must NOT be served.
 ln -s /etc/passwd "$ROOT/escape.txt"
 
@@ -46,6 +47,14 @@ def get(path, conn=None):
     ct = r.getheader("Content-Type"); ka = r.getheader("Connection")
     if not conn: c.close()
     return r.status, body, ct, ka
+
+def req_full(path, headers=None):
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+    c.request("GET", path, headers=headers or {})
+    r = c.getresponse(); body = r.read()
+    h = {k.lower(): v for k, v in r.getheaders()}
+    c.close()
+    return r.status, body, h
 
 # existing text file
 s,b,ct,_ = get("/hello.txt")
@@ -120,6 +129,44 @@ ths = [threading.Thread(target=worker) for _ in range(16)]
 for t in ths: t.start()
 for t in ths: t.join()
 chk("16 concurrent streams byte-exact", len(results) == 16 and all(results), f"{sum(results)}/16")
+
+# ---- Range (RFC 7233) + conditional GET (RFC 7232) ----
+fdata = open(ROOT+"/f.txt","rb").read(); N = len(fdata)
+s,b,h = req_full("/f.txt")
+chk("Accept-Ranges advertised", h.get("accept-ranges")=="bytes", str(h.get("accept-ranges")))
+etag = h.get("etag"); lastmod = h.get("last-modified")
+chk("ETag + Last-Modified present", bool(etag) and bool(lastmod), f"{etag} / {lastmod}")
+
+s,b,h = req_full("/f.txt", {"Range":"bytes=0-99"})
+chk("range 0-99 -> 206 partial", s==206 and b==fdata[0:100] and h.get("content-range")==f"bytes 0-99/{N}",
+    f"status={s} cr={h.get('content-range')}")
+s,b,h = req_full("/f.txt", {"Range":"bytes=-50"})
+chk("suffix range -> last 50", s==206 and b==fdata[-50:], f"status={s} len={len(b)}")
+s,b,h = req_full("/f.txt", {"Range":"bytes=100-"})
+chk("open-ended range -> from 100", s==206 and b==fdata[100:], f"status={s} len={len(b)}")
+s,b,h = req_full("/f.txt", {"Range":"bytes=999999-"})
+chk("unsatisfiable -> 416", s==416 and h.get("content-range")==f"bytes */{N}", f"status={s}")
+
+# range on the streamed (large) file path
+sdata = open(ROOT+"/stream.bin","rb").read()
+s,b,h = req_full("/stream.bin", {"Range":"bytes=500000-599999"})
+chk("ranged streamed file byte-exact", s==206 and b==sdata[500000:600000], f"status={s} len={len(b)}")
+
+# conditional GET
+s,b,h = req_full("/f.txt", {"If-None-Match": etag})
+chk("If-None-Match (current) -> 304", s==304 and b==b"", f"status={s} bodylen={len(b)}")
+s,b,h = req_full("/f.txt", {"If-None-Match": '"stale"'})
+chk("If-None-Match (stale) -> 200 full", s==200 and b==fdata, f"status={s}")
+s,b,h = req_full("/f.txt", {"If-Modified-Since": "Wed, 01 Jan 2031 00:00:00 GMT"})
+chk("If-Modified-Since future -> 304", s==304, f"status={s}")
+s,b,h = req_full("/f.txt", {"If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT"})
+chk("If-Modified-Since past -> 200", s==200 and b==fdata, f"status={s}")
+
+# If-Range: matching validator serves the range; stale one serves the full body
+s,b,h = req_full("/f.txt", {"Range":"bytes=0-9", "If-Range": etag})
+chk("If-Range match -> 206", s==206 and b==fdata[0:10], f"status={s}")
+s,b,h = req_full("/f.txt", {"Range":"bytes=0-9", "If-Range": '"stale"'})
+chk("If-Range mismatch -> 200 full", s==200 and b==fdata, f"status={s}")
 
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)
