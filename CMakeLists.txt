@@ -136,6 +136,10 @@ if(PORTICO_BUILD_TESTS)
         # PINGed and reaped on pong timeout; an idle HTTP keep-alive is reaped too.
         add_test(NAME keepalive
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/keepalive_test.sh $<TARGET_FILE:http_server>)
+        # Static file serving (async aio path): correct bytes/types, large-file
+        # byte-exactness, 404/403, traversal + symlink safety, keep-alive resume.
+        add_test(NAME static
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/static_test.sh $<TARGET_FILE:http_server>)
         # TLS: HTTPS + WSS against one TLS listener (needs openssl to mint a cert).
         find_program(OPENSSL_BIN openssl)
         if(PORTICO_TLS AND OPENSSL_BIN)

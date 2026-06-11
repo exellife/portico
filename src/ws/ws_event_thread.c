@@ -296,9 +296,15 @@ int ws_init_event_thread(ws_event_thread_t *thread, uint32_t thread_id,
      * back to the threadpool. Its wakeup_fd joins this thread's epoll so read
      * completions are drained on the connection-owning thread. */
     {
+        /* PORTICO_AIO_BACKEND=threadpool|blocking|iouring overrides the default
+         * (io_uring, falling back to the threadpool when it's unavailable). */
+        const char *be = getenv("PORTICO_AIO_BACKEND");
         portico_aio_cfg_t acfg = { .backend = PORTICO_AIO_IOURING };
+        if (be && strcmp(be, "threadpool") == 0)    acfg.backend = PORTICO_AIO_THREADPOOL;
+        else if (be && strcmp(be, "blocking") == 0) acfg.backend = PORTICO_AIO_BLOCKING;
+        if (acfg.backend == PORTICO_AIO_THREADPOOL) acfg.threads = 2;
         thread->aio = portico_aio_create(&acfg);
-        if (!thread->aio) {
+        if (!thread->aio && acfg.backend == PORTICO_AIO_IOURING) {
             portico_aio_cfg_t tcfg = { .backend = PORTICO_AIO_THREADPOOL, .threads = 2 };
             thread->aio = portico_aio_create(&tcfg);
         }

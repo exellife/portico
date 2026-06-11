@@ -19,6 +19,11 @@ struct portico_response {
     int    owns_body;
     int    keep_alive;                          /* inherited from request */
     int    content_type_set;
+    /* Static file serving (set by portico_res_file). When is_file is set, the
+     * body is the contents of file_fd (served via an async read), not `body`. */
+    int       is_file;
+    int       file_fd;
+    long long file_size;
 };
 
 /* Parse one request from `buf` (length `len`) using picohttpparser.

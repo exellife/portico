@@ -97,7 +97,10 @@ struct ws_connection {
     size_t out_used;               /* Total bytes queued */
     size_t out_sent;               /* Bytes already drained from the front */
     uint8_t out_close_when_drained;/* Close the connection once out_buffer empties */
-    
+    uint8_t http_async_inflight;   /* A static-file read is in flight: buffer input
+                                    * but don't process requests until it completes
+                                    * (preserves HTTP response ordering). */
+
     /* User data pointer */
     void *user_data;               /* Application-specific data */
 

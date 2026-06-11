@@ -68,4 +68,18 @@ void portico_res_body(portico_response_t *res, const void *data, size_t len,
 void portico_res_json(portico_response_t *res, const char *json);
 void portico_res_text(portico_response_t *res, int status, const char *text);
 
+/* Serve a static file. Resolves `req`'s URL path under `docroot` — percent-decoded
+ * and traversal/symlink-safe (the resolved path must stay within docroot) — opens
+ * it, and arranges for its contents to be sent as the response body via async I/O
+ * (the read happens off the event thread; the response is produced after the
+ * handler returns). Sets Content-Type from the file extension if not already set.
+ *
+ * Always produces a complete response: 200 for a readable regular file, else an
+ * error status (404 not found, 403 forbidden / escapes docroot, 413 too large,
+ * 400 bad path). Call it from the handler and `return 0` — do not also fill the
+ * response yourself. Returns 0 if a file was accepted for sending, non-zero if an
+ * error status was set instead. */
+int portico_res_file(portico_response_t *res, const portico_request_t *req,
+                     const char *docroot);
+
 #endif /* PORTICO_HTTP_H */

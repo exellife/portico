@@ -172,9 +172,23 @@ the foundation, built first as a standalone, isolation-tested library.
       Caveat: validated functionally on x86 — recommend a smoke run on the actual
       Ampere target. Follow-ups: batched submit / SQPOLL, registered buffers+files.
 - [ ] **Offload `open()`/`stat()` too**, not just `read()` (a cold dentry blocks).
-- [ ] **`portico_res_file`** on top: validate path (traversal/symlink — stays in the
-      HTTP layer, not the I/O lib), stat, open, stream via aio into the existing
-      `out_buffer`/send path. Range requests, ETag/Last-Modified, MIME by extension.
+- [x] **`portico_res_file`** (src/http/connection.c) — serves a static file from a
+      docroot via the aio path. Handler calls it and returns; the core submits one
+      async read off the event thread and **parks** the connection (buffering but
+      not processing further input), then the read completion builds the response,
+      sends it via the existing backpressure path, and resumes (keep-alive →
+      pipelined, else close). Security: percent-decode then `realpath()`, requiring
+      the result to stay within the docroot — defeats `../` traversal (encoded and
+      plain) and symlinks escaping the tree; path validation stays in the HTTP
+      layer, never the I/O lib. Slot-reuse guarded by the connection `generation`
+      (a connection closed mid-read → result discarded, never written to a recycled
+      socket). MIME by extension; synchronous-read fallback when aio is unavailable.
+      Each event thread owns its aio instance; `PORTICO_AIO_BACKEND` overrides the
+      io_uring-then-threadpool default. Tested e2e (bytes, types, 404/403,
+      traversal + symlink safety, 250 KB byte-exact, keep-alive resume) across all
+      three backends; ASan-clean; portico suite 11/11.
+      Follow-ups: streaming for files > 1 MiB (today's single-read cap), HTTP Range,
+      ETag/Last-Modified + conditional GET, directory index, prefix stripping.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 

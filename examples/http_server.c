@@ -28,7 +28,7 @@ static int on_accept(const char *client_ip, void *deny_ip) {
 
 /* --- HTTP routing --- */
 static int on_http(const portico_request_t *req, portico_response_t *res, void *u) {
-    (void)u;
+    const char *static_root = (const char *)u;   /* docroot, or NULL if unset */
     if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/ip")) {
         portico_res_text(res, 200, portico_req_client_ip(req));   /* resolved client IP */
         return 0;
@@ -55,6 +55,11 @@ static int on_http(const portico_request_t *req, portico_response_t *res, void *
         }
         portico_res_status(res, 405);
         portico_res_header(res, "Allow", "GET, POST");
+        return 0;
+    }
+    /* Static files: serve any other GET from STATIC_ROOT (async, traversal-safe). */
+    if (static_root && portico_req_method_is(req, "GET")) {
+        portico_res_file(res, req, static_root);
         return 0;
     }
     portico_res_text(res, 404, "not found\n");
@@ -103,6 +108,7 @@ int main(void) {
     ws_callbacks_t cb = {0};
     cb.on_binary_message = on_binary;
     cb.on_http_request   = on_http;
+    cb.http_user_data    = getenv("STATIC_ROOT");  /* docroot for static serving */
     cb.on_accept         = on_accept;          /* IP gate (demo) */
     cb.accept_user_data  = getenv("DENY_IP");  /* reject this IP, if set */
 
