@@ -733,6 +733,43 @@ int portico_res_file(portico_response_t *res, const portico_request_t *req, cons
     return portico_res_static(res, req, &opts);
 }
 
+/* Case-insensitive exact / "*." single-label wildcard host match. */
+static int vhost_match(const char *pat, const char *host) {
+    if (pat[0] == '*' && pat[1] == '.') {
+        const char *dot = strchr(host, '.');
+        return dot && strcasecmp(pat + 2, dot + 1) == 0;
+    }
+    return strcasecmp(pat, host) == 0;
+}
+
+int portico_res_vhost(portico_response_t *res, const portico_request_t *req,
+                      const portico_vhost_t *vhosts, size_t n) {
+    if (!res || !req || !vhosts) { if (res) res->status = 500; return -1; }
+
+    /* The host from the Host header, with any :port dropped. */
+    char host[256] = {0};
+    size_t hlen = 0;
+    const char *hv = portico_req_header(req, "Host", &hlen);
+    if (hv && hlen && hlen < sizeof host) {
+        memcpy(host, hv, hlen); host[hlen] = '\0';
+        char *colon = strrchr(host, ':');           /* strip ":port" (digits only) */
+        if (colon && colon[1]) {
+            int digits = 1;
+            for (char *p = colon + 1; *p; p++) if (!isdigit((unsigned char)*p)) { digits = 0; break; }
+            if (digits) *colon = '\0';
+        }
+    }
+
+    const portico_vhost_t *def = NULL, *hit = NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (!vhosts[i].host) { if (!def) def = &vhosts[i]; continue; }
+        if (host[0] && vhost_match(vhosts[i].host, host)) { hit = &vhosts[i]; break; }
+    }
+    const portico_vhost_t *v = hit ? hit : def;
+    if (!v) { res->status = 404; return -1; }        /* Host not served here (allow-list) */
+    return portico_res_static(res, req, &v->static_opts);
+}
+
 /* In-flight file transfer, carried from submit to the read completion. */
 typedef struct {
     ws_event_thread_t *thread;

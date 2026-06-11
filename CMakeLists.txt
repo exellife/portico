@@ -140,6 +140,9 @@ if(PORTICO_BUILD_TESTS)
         # byte-exactness, 404/403, traversal + symlink safety, keep-alive resume.
         add_test(NAME static
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/static_test.sh $<TARGET_FILE:http_server>)
+        # Name-based virtual hosting: Host -> per-vhost docroot (+ wildcard, allow-list).
+        add_test(NAME vhost
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/vhost_test.sh $<TARGET_FILE:http_server>)
         # TLS: HTTPS + WSS against one TLS listener (needs openssl to mint a cert).
         find_program(OPENSSL_BIN openssl)
         if(PORTICO_TLS AND OPENSSL_BIN)

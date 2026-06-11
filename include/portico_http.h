@@ -109,4 +109,20 @@ typedef struct {
 int portico_res_static(portico_response_t *res, const portico_request_t *req,
                        const portico_static_opts_t *opts);
 
+/* A name-based virtual host: its static config, keyed by Host. */
+typedef struct {
+    const char           *host;        /* "foo.com", "*.foo.com", or NULL = default */
+    portico_static_opts_t static_opts; /* served via portico_res_static for this host */
+} portico_vhost_t;
+
+/* Route a request by its Host header (the host part of the multi-site story; SNI
+ * picks the cert, this picks the docroot). Strips any :port, matches the Host
+ * case-insensitively against each vhost's `host` (exact or leading "*." wildcard),
+ * and serves the match via portico_res_static. A vhost with host==NULL is the
+ * fallback. If nothing matches and there's no fallback, sets 404 (an allow-list:
+ * an unconfigured Host is never served). Returns portico_res_static's result, or
+ * -1 with status 404 when no vhost applies. */
+int portico_res_vhost(portico_response_t *res, const portico_request_t *req,
+                      const portico_vhost_t *vhosts, size_t n);
+
 #endif /* PORTICO_HTTP_H */

@@ -13,6 +13,8 @@
 static ws_server_t *g_server = NULL;
 static volatile sig_atomic_t g_running = 1;
 static portico_static_opts_t g_static;   /* STATIC_ROOT/STATIC_PREFIX, from main */
+static portico_vhost_t g_vhosts[16];      /* VHOSTS="host:docroot;..." */
+static size_t g_vhost_n = 0;
 
 /* --- WebSocket: raw binary echo --- */
 static int on_binary(int fd, const void *data, size_t len, void *u) {
@@ -30,6 +32,11 @@ static int on_accept(const char *client_ip, void *deny_ip) {
 /* --- HTTP routing --- */
 static int on_http(const portico_request_t *req, portico_response_t *res, void *u) {
     const char *static_root = (const char *)u;   /* docroot, or NULL if unset */
+    /* Name-based virtual hosting: route GET by Host to per-vhost docroots. */
+    if (g_vhost_n && portico_req_method_is(req, "GET")) {
+        portico_res_vhost(res, req, g_vhosts, g_vhost_n);
+        return 0;
+    }
     if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/ip")) {
         portico_res_text(res, 200, portico_req_client_ip(req));   /* resolved client IP */
         return 0;
@@ -130,6 +137,19 @@ int main(void) {
     g_static.cache_control = getenv("STATIC_CACHE_CONTROL");          /* e.g. "max-age=3600" */
     g_static.spa_fallback  = getenv("STATIC_SPA");                    /* e.g. "index.html" */
     g_static.dir_redirect  = getenv("STATIC_DIR_REDIRECT") != NULL;   /* /dir -> 301 /dir/ */
+
+    /* Name-based virtual hosting: VHOSTS="host:docroot;host2:docroot2" (host may be
+     * a "*.example.com" wildcard). Unconfigured Hosts get 404 (allow-list). */
+    char *vh_env = getenv("VHOSTS");
+    if (vh_env) {
+        char *buf = strdup(vh_env);
+        for (char *e = strtok(buf, ";"); e && g_vhost_n < 16; e = strtok(NULL, ";")) {
+            char *dr = strchr(e, ':'); if (!dr) continue; *dr++ = '\0';
+            g_vhosts[g_vhost_n].host = e;
+            g_vhosts[g_vhost_n].static_opts.docroot = dr;
+            g_vhost_n++;
+        }
+    }
 
     cb.on_binary_message = on_binary;
     cb.on_http_request   = on_http;

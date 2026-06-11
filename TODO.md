@@ -75,8 +75,14 @@ Optional follow-ups:
 - [ ] SIGHUP cert reload (hot-rotate without a restart).
 - [ ] ALPN (advertise `http/1.1`); later HTTP/2 if ever wanted.
 - [ ] Optional ACME, or document Caddy as the zero-code alternative for easy auto-HTTPS.
-- [ ] Built-in Host→{docroot, vhost} router helper + Host allow-list (convenience over
-      the per-handler routing that works today).
+- [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a
+      request to a per-host static config by the Host header: strips `:port`, matches
+      case-insensitively (exact or `*.` wildcard), serves via portico_res_static. A
+      host==NULL vhost is the fallback; otherwise an unconfigured Host gets 404 (an
+      allow-list — never serve an arbitrary Host). Pairs with SNI (cert) to make
+      "many sites, one IP" declarative. Example: VHOSTS="host:docroot;...". Tested
+      (exact/port/case/wildcard/deep-no-match/unknown-404/no-Host-404/traversal),
+      ASan-clean, suite 13/13.
 
 ---
 
