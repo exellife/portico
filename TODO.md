@@ -89,8 +89,13 @@ Optional follow-ups:
       - [x] JSON (vendored cJSON in third_party) + base64url codec (src/acme/) — 16-case
             unit test (RFC 4648 vectors, URL-safe alphabet, round-trips, reject non-b64url),
             ASan-clean.
-      - [ ] verifying HTTPS client → JWS/ES256 → CSR → ACME state machine (vs LE staging)
-            → HTTP-01 responder → storage/reload/renewal → e2e on a public domain.
+      - [x] verifying HTTPS client (src/acme/acme_https.c) — blocking, one conn/request,
+            on OpenSSL; verifies the chain AND the hostname (SSL_set1_host). Captures
+            Replay-Nonce/Location/Content-Type; de-chunks. Tested locally (trusted+host
+            → 200, system-roots self-signed → reject, wrong host → reject), ASan-clean;
+            real-internet smoke retrieves the LE *staging* directory JSON over verified TLS.
+      - [ ] JWS/ES256 → CSR → ACME state machine (vs LE staging) → HTTP-01 responder
+            → storage/reload/renewal → e2e on a public domain.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a

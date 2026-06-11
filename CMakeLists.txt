@@ -50,13 +50,17 @@ add_library(cjson STATIC third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC third_party/cjson/include)
 target_compile_options(cjson PRIVATE -w)
 
-# --- ACME client (RFC 8555), built incrementally; depends only on libc + cJSON
-# (OpenSSL added when the HTTPS client / JWS crypto land). ---
+# --- ACME client (RFC 8555), built incrementally; cJSON + OpenSSL (the latter for
+# the verifying HTTPS client and JWS crypto, gated on PORTICO_TLS like the lib). ---
 file(GLOB PORTICO_ACME_SOURCES CONFIGURE_DEPENDS src/acme/*.c)
 add_library(portico_acme STATIC ${PORTICO_ACME_SOURCES})
 target_include_directories(portico_acme PUBLIC include src/acme)
 target_compile_options(portico_acme PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_link_libraries(portico_acme PUBLIC cjson)
+if(PORTICO_TLS)
+    target_link_libraries(portico_acme PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(portico_acme PRIVATE PORTICO_TLS=1)
+endif()
 
 # --- portico library ---
 file(GLOB PORTICO_WS_SOURCES   CONFIGURE_DEPENDS src/ws/*.c)
@@ -171,6 +175,12 @@ if(PORTICO_BUILD_TESTS)
             # SIGHUP TLS cert hot-reload: new certs served, server stays up (zero downtime).
             add_test(NAME reload
                 COMMAND bash ${CMAKE_SOURCE_DIR}/tests/reload_test.sh $<TARGET_FILE:http_server>)
+            # ACME verifying HTTPS client: chain + hostname verification (local TLS server).
+            add_executable(https_probe tests/https_probe.c)
+            target_link_libraries(https_probe PRIVATE portico_acme)
+            add_test(NAME https_client
+                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/https_client_test.sh
+                        $<TARGET_FILE:http_server> $<TARGET_FILE:https_probe>)
         endif()
     endif()
 endif()
