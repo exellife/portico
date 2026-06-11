@@ -75,6 +75,14 @@ add_library(portico_aio STATIC ${PORTICO_AIO_SOURCES})
 target_include_directories(portico_aio PUBLIC include PRIVATE src/aio)
 target_compile_options(portico_aio PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_link_libraries(portico_aio PUBLIC Threads::Threads)
+# io_uring backend uses raw syscalls (no liburing); enable it where the kernel
+# headers exist. Absent → aio_uring.c is an -ENOSYS stub and PORTICO_AIO_IOURING
+# falls back. No extra link dependency.
+include(CheckIncludeFile)
+check_include_file("linux/io_uring.h" PORTICO_HAVE_LINUX_IO_URING)
+if(PORTICO_HAVE_LINUX_IO_URING)
+    target_compile_definitions(portico_aio PRIVATE PORTICO_AIO_HAVE_IOURING=1)
+endif()
 
 # --- examples ---
 if(PORTICO_BUILD_EXAMPLES)

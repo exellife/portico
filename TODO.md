@@ -159,8 +159,18 @@ the foundation, built first as a standalone, isolation-tested library.
       concurrent ops + backpressure-retry. Clean under TSan and ASan/UBSan. This is
       the portable, non-stalling path and the runtime fallback when io_uring is
       absent (old kernel / seccomp).
-- [ ] **io_uring backend** — Linux fast path; same differential suite. Keep its ring
-      separate from the network epoll (joined by the eventfd) for portability.
+- [x] **io_uring backend** (`src/aio/aio_uring.c`) — Linux fast path: reads go to
+      the kernel SQ and are reaped from the CQ, no thread parked per in-flight op.
+      Built on **raw io_uring syscalls** (no liburing dep — portico stays
+      self-contained); registers the frontend's wakeup_fd with the ring so it fits
+      the same epoll-add → drain() contract. Ring index publish/consume uses C11
+      acquire/release atomics, so ordering is correct on weakly-ordered ARM/Ampere,
+      not just x86. Compiled only where `<linux/io_uring.h>` exists (else an
+      `-ENOSYS` stub → clean fallback); runtime setup failure (old kernel / seccomp)
+      also returns `-ENOSYS`. Differential-tested vs the blocking oracle
+      (byte-identical) + 1000 concurrent ops; clean under ASan/UBSan and TSan.
+      Caveat: validated functionally on x86 — recommend a smoke run on the actual
+      Ampere target. Follow-ups: batched submit / SQPOLL, registered buffers+files.
 - [ ] **Offload `open()`/`stat()` too**, not just `read()` (a cold dentry blocks).
 - [ ] **`portico_res_file`** on top: validate path (traversal/symlink — stays in the
       HTTP layer, not the I/O lib), stat, open, stream via aio into the existing

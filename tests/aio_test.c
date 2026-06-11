@@ -68,11 +68,18 @@ static int do_read(portico_aio_t *a, void *buf, size_t len, off_t off, cap_t *ou
     return rc;
 }
 
-/* The backend-agnostic correctness suite — must pass identically for every backend. */
-static void correctness_suite(portico_aio_backend_t backend, const char *label) {
+/* The backend-agnostic correctness suite — must pass identically for every
+ * backend. `optional` backends (io_uring) that the kernel rejects are skipped,
+ * not failed. */
+static void correctness_suite(portico_aio_backend_t backend, const char *label, int optional) {
     char nm[80];
     portico_aio_cfg_t cfg = { .backend = backend, .threads = 4 };
+    errno = 0;
     portico_aio_t *a = portico_aio_create(&cfg);
+    if (!a && optional && errno == ENOSYS) {
+        printf("  %-5s [%s] unavailable on this kernel — skipped\n", "skip", label);
+        return;
+    }
     snprintf(nm, sizeof nm, "[%s] create", label);
     chk(nm, a != NULL, a ? "" : strerror(errno));
     if (!a) return;
@@ -124,9 +131,10 @@ int main(void) {
     for (size_t i = 0; i < FILE_SIZE; i++) src[i] = pat(i);
     if (write(g_fd, src, FILE_SIZE) != FILE_SIZE) { perror("write"); return 2; }
 
-    /* ---- differential: same suite, both backends ---- */
-    correctness_suite(PORTICO_AIO_BLOCKING,   "blocking");
-    correctness_suite(PORTICO_AIO_THREADPOOL, "threadpool");
+    /* ---- differential: same suite, every backend ---- */
+    correctness_suite(PORTICO_AIO_BLOCKING,   "blocking",   0);
+    correctness_suite(PORTICO_AIO_THREADPOOL, "threadpool", 0);
+    correctness_suite(PORTICO_AIO_IOURING,    "io_uring",   1);   /* skipped if kernel rejects */
 
     unsigned char buf[FILE_SIZE];
 
@@ -230,13 +238,38 @@ int main(void) {
         portico_aio_destroy(a);
     }
 
-    /* reserved backend reports ENOSYS rather than misbehaving */
+    /* ---- io_uring: many concurrent ops, all correct (if available) ---- */
     {
-        portico_aio_cfg_t cfg = { .backend = PORTICO_AIO_IOURING };
+        enum { N = 1000, LEN = 64 };
+        portico_aio_cfg_t cfg = { .backend = PORTICO_AIO_IOURING, .queue_depth = 4096 };
         errno = 0;
-        portico_aio_t *b = portico_aio_create(&cfg);
-        chk("unimplemented backend -> NULL/ENOSYS", b == NULL && errno == ENOSYS, NULL);
-        if (b) portico_aio_destroy(b);
+        portico_aio_t *a = portico_aio_create(&cfg);
+        if (!a && errno == ENOSYS) {
+            printf("  skip  [io_uring] concurrency — unavailable on this kernel\n");
+        } else if (a) {
+            static cap_t caps[N];
+            static unsigned char bufs[N][LEN];
+            int submit_err = 0;
+            for (int i = 0; i < N; i++) {
+                caps[i].res = -1; caps[i].called = 0;
+                off_t off = (off_t)((i % 60) * LEN);
+                if (portico_aio_pread(a, g_fd, bufs[i], LEN, off, cb_capture, &caps[i]) != 0)
+                    submit_err = 1;
+            }
+            int fired = await_completions(a, N, 10000);
+            int all = (!submit_err && fired == N);
+            for (int i = 0; i < N && all; i++) {
+                off_t off = (off_t)((i % 60) * LEN);
+                ssize_t want = (off + LEN <= FILE_SIZE) ? LEN : (FILE_SIZE - off);
+                if (caps[i].called != 1 || caps[i].res != want || !verify(bufs[i], off, caps[i].res))
+                    all = 0;
+            }
+            char d[40]; snprintf(d, sizeof d, "fired %d/%d", fired, (int)N);
+            chk("[io_uring] 1000 concurrent ops correct", all, d);
+            portico_aio_destroy(a);
+        } else {
+            chk("[io_uring] create", 0, strerror(errno));
+        }
     }
 
     close(g_fd);

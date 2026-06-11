@@ -26,7 +26,8 @@ portico_aio_t *portico_aio_create(const portico_aio_cfg_t *cfg) {
     switch (a->cfg.backend) {
         case PORTICO_AIO_BLOCKING:   rc = portico_aio_blocking_init(a);   break;
         case PORTICO_AIO_THREADPOOL: rc = portico_aio_threadpool_init(a); break;
-        default:                     rc = -ENOSYS; break;   /* iouring: not yet */
+        case PORTICO_AIO_IOURING:    rc = portico_aio_uring_init(a);      break;
+        default:                     rc = -ENOSYS; break;
     }
     if (rc != 0) {
         pthread_mutex_destroy(&a->lock);
@@ -54,13 +55,11 @@ void portico_aio_destroy(portico_aio_t *a) {
 
 int portico_aio_wakeup_fd(portico_aio_t *a) { return a->wakeup_fd; }
 
-void portico_aio_post_completion(portico_aio_t *a, portico_aio_cb_t cb,
-                                 void *user, ssize_t res) {
+void portico_aio_enqueue(portico_aio_t *a, portico_aio_cb_t cb, void *user, ssize_t res) {
     portico_aio_completion_t *c = malloc(sizeof *c);
     if (!c) {
         /* Out of memory for bookkeeping: fire inline as a last resort so the op
-         * is never silently lost. Rare; the threaded backends will document that
-         * this can run the callback on a worker thread. */
+         * is never silently lost. Rare; runs on the caller's thread. */
         cb(user, res);
         return;
     }
@@ -70,6 +69,11 @@ void portico_aio_post_completion(portico_aio_t *a, portico_aio_cb_t cb,
     if (a->tail) a->tail->next = c; else a->head = c;
     a->tail = c;
     pthread_mutex_unlock(&a->lock);
+}
+
+void portico_aio_post_completion(portico_aio_t *a, portico_aio_cb_t cb,
+                                 void *user, ssize_t res) {
+    portico_aio_enqueue(a, cb, user, res);
 
     /* Coalesce wakeups: only the first completion since the last drain actually
      * writes the eventfd. A burst of N completions costs one notify syscall, not

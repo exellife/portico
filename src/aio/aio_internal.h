@@ -43,13 +43,22 @@ struct portico_aio {
     portico_aio_cfg_t         cfg;
 };
 
-/* Enqueue a finished op and signal wakeup_fd. Thread-safe; callable from any
- * backend worker thread. The callback fires later, in portico_aio_drain(). */
+/* Enqueue a finished op WITHOUT signalling wakeup_fd. For use by a reap() that
+ * already runs on the consumer thread inside drain() (the io_uring backend) —
+ * the items are popped in the same drain pass. Thread-safe. */
+void portico_aio_enqueue(portico_aio_t *a, portico_aio_cb_t cb, void *user, ssize_t res);
+
+/* Enqueue a finished op AND signal wakeup_fd (coalesced). For backends that post
+ * from another thread (blocking inline, threadpool workers). The callback fires
+ * later, in portico_aio_drain(). */
 void portico_aio_post_completion(portico_aio_t *a, portico_aio_cb_t cb,
                                  void *user, ssize_t res);
 
-/* Backend constructors: wire a->ops and a->backend, return 0 or -errno. */
+/* Backend constructors: wire a->ops and a->backend, return 0 or -errno.
+ * uring_init returns -ENOSYS when built without io_uring or when the kernel
+ * rejects it at runtime (old kernel / seccomp) — caller falls back. */
 int  portico_aio_blocking_init(portico_aio_t *a);
 int  portico_aio_threadpool_init(portico_aio_t *a);
+int  portico_aio_uring_init(portico_aio_t *a);
 
 #endif /* PORTICO_AIO_INTERNAL_H */
