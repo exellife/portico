@@ -274,8 +274,14 @@ static void resolve_client_ip(const ws_connection_t *conn, const ws_server_inter
 /* ---- static file serving ------------------------------------------------- */
 
 /* Files larger than this are STREAMED (chunked read↔send) instead of read whole
- * into one buffer; at or below it, the simple single-read path is used. */
-#define PORTICO_STREAM_CHUNK  (256 * 1024)
+ * into one buffer; at or below it, the simple single-read path is used. Also the
+ * per-chunk read size while streaming — and the dominant streaming-throughput
+ * knob: bigger chunks mean fewer read→send→EPOLLOUT cycles (and, on the
+ * threadpool backend, fewer worker round-trips) per MB. Measured (200 MB, warm):
+ * 256K→2.4, 1M→5.3, 4M→6.5 GB/s on the threadpool path; io_uring is already
+ * link-bound (~6 GB/s) at any of these. 1 MiB balances throughput against the
+ * 1 MiB-per-active-stream buffer cost. See tests/stream_bench.sh. */
+#define PORTICO_STREAM_CHUNK  (1024 * 1024)
 /* Single-read path cap (small files, or the no-aio fallback): bounded well under
  * the out-buffer cap. Bigger files require the async streaming path. */
 #define PORTICO_SINGLE_MAX    (4 * 1024 * 1024)

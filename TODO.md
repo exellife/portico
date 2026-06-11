@@ -241,8 +241,23 @@ the foundation, built first as a standalone, isolation-tested library.
       satisfiable → 416; a single effective range → the normal single-range path; a
       HEAD multi-range → full HEAD. Tested (parts byte-exact, all-unsatisfiable 416)
       across 3 backends, ASan-clean, suite 11/11.
-      Follow-ups: read-ahead (double-buffer) for streaming throughput, io_uring
-      batched-submit/SQPOLL tuning, fully-streamed (unbounded) multipart.
+      Follow-ups: fully-streamed (unbounded) multipart.
+- [x] **Streaming throughput — measured, then tuned** (src/http/connection.c,
+      tests/stream_bench.sh) — built a benchmark and let the data decide rather than
+      optimize blind. Findings (200 MB, single stream, this box): io_uring is already
+      link/memory-bound (~6–8 GB/s) and cold≈warm (fast storage); threadpool scales
+      hard with chunk size — 256K→2.4, 1M→5.3, 4M→6.5 GB/s. So the one change made was
+      bumping **PORTICO_STREAM_CHUNK 256 KiB → 1 MiB** (measured ~2.2× threadpool, less
+      CPU/byte on io_uring; 1 MiB/stream memory). Result: io_uring ~8, threadpool ~5.8,
+      blocking ~4–8 GB/s — all far past any real network link.
+      Deliberately NOT done (the data doesn't justify them): **read-ahead/double-buffer**
+      — the chunk-size lever already closed the measurable gap, and its remaining benefit
+      is slow-disk read↔send overlap, a regime not reproducible here (cold≈warm) → would
+      be optimizing blind; **io_uring SQPOLL / batched-submit** — streaming is low-op-rate
+      (with 1 MiB chunks, ~200 reads per 200 MB), so submit syscalls aren't the bottleneck
+      and SQPOLL would burn a core for nothing (these matter for a high-IOPS path like the
+      data API, not large-file streaming). Revisit read-ahead only if slow-disk profiling
+      ever shows a need.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 
