@@ -94,7 +94,13 @@ Optional follow-ups:
             Replay-Nonce/Location/Content-Type; de-chunks. Tested locally (trusted+host
             → 200, system-roots self-signed → reject, wrong host → reject), ASan-clean;
             real-internet smoke retrieves the LE *staging* directory JSON over verified TLS.
-      - [ ] JWS/ES256 → CSR → ACME state machine (vs LE staging) → HTTP-01 responder
+      - [x] account key (EC P-256) + JWS/ES256 (src/acme/acme_jws.c) — load-or-create +
+            persist the account key; canonical JWK + RFC 7638 thumbprint; flattened JWS
+            (jwk for newAccount, kid after) with ES256 in the JOSE raw R||S form (not DER).
+            Known-answer vectors for JWK/thumbprint (cross-checked vs Python) + the
+            signature is cryptographically VERIFIED (ECDSA is randomized), both jwk and
+            kid modes. ASan-clean.
+      - [ ] CSR → ACME state machine (vs LE staging) → HTTP-01 responder
             → storage/reload/renewal → e2e on a public domain.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)

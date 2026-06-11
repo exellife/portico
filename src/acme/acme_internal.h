@@ -44,4 +44,32 @@ int portico_https_request(const char *method, const char *url, const char *ca_fi
                           const char *headers, const void *body, size_t body_len,
                           portico_http_response_t *resp);
 
+/* ---- account key + JWS (ES256) — the crypto every ACME POST is wrapped in ----
+ * The account key is an EC P-256 key (OpenSSL 3.0+); persisted so the account is
+ * registered once. Signatures use ES256 (ECDSA P-256 + SHA-256) in the JOSE raw
+ * R||S form, NOT DER. */
+typedef struct portico_acme_key portico_acme_key_t;   /* opaque (wraps EVP_PKEY) */
+
+/* Load the account key PEM from `path`, or generate a new P-256 key and save it
+ * there (0600). Returns the key (free with portico_acme_key_free) or NULL. */
+portico_acme_key_t *portico_acme_key_load_or_create(const char *path);
+void                portico_acme_key_free(portico_acme_key_t *k);
+
+/* Canonical JWK JSON for the public key — {"crv":"P-256","kty":"EC","x":..,"y":..}
+ * (members lexicographically ordered, no whitespace — also the thumbprint input).
+ * Writes NUL-terminated into `out`; returns length or -1. */
+int portico_acme_jwk(const portico_acme_key_t *k, char *out, size_t cap);
+
+/* RFC 7638 JWK thumbprint: base64url(SHA-256(canonical JWK)). The key half of the
+ * HTTP-01 key authorization. Writes NUL-terminated into `out`; returns length / -1. */
+int portico_acme_thumbprint(const portico_acme_key_t *k, char *out, size_t cap);
+
+/* Flattened JWS (RFC 7515) signing `payload` (NUL-terminated JSON, or "" for
+ * POST-as-GET). The protected header carries alg=ES256, the given `nonce` and
+ * `url`, and identifies the key by `kid` (account URL) when non-NULL, else by the
+ * full `jwk` (newAccount uses jwk; everything afterward uses kid). Writes the JWS
+ * JSON object into `out`; returns length or -1. */
+int portico_acme_jws(const portico_acme_key_t *k, const char *kid, const char *nonce,
+                     const char *url, const char *payload, char *out, size_t cap);
+
 #endif /* PORTICO_ACME_INTERNAL_H */

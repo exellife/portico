@@ -126,6 +126,14 @@ if(PORTICO_BUILD_TESTS)
     target_link_libraries(base64url_test PRIVATE portico_acme)
     add_test(NAME base64url COMMAND base64url_test)
 
+    # ACME account key + JWS/ES256 (only with TLS — needs OpenSSL). Known-answer JWK/
+    # thumbprint + cryptographic signature verification.
+    if(PORTICO_TLS)
+        add_executable(jws_test tests/jws_test.c)
+        target_link_libraries(jws_test PRIVATE portico_acme)
+        add_test(NAME jws COMMAND jws_test)
+    endif()
+
     find_program(PYTHON3 python3)
     if(PYTHON3 AND PORTICO_BUILD_EXAMPLES)
         add_test(NAME ws_adversarial
