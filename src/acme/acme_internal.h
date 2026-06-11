@@ -72,4 +72,12 @@ int portico_acme_thumbprint(const portico_acme_key_t *k, char *out, size_t cap);
 int portico_acme_jws(const portico_acme_key_t *k, const char *kid, const char *nonce,
                      const char *url, const char *payload, char *out, size_t cap);
 
+/* ---- certificate key + CSR -------------------------------------------------
+ * Generate/persist the CERTIFICATE key (EC P-256, 0600) at `key_path` and build a
+ * PKCS#10 CSR for `domains` carrying them as Subject Alternative Names (mandatory —
+ * browsers ignore the CN), DER-encoded then base64url for the ACME finalize step.
+ * Writes the base64url CSR into `out`; returns length or -1. */
+int portico_acme_make_csr(const char *key_path, const char *const *domains,
+                          size_t ndomains, char *out, size_t cap);
+
 #endif /* PORTICO_ACME_INTERNAL_H */

@@ -100,7 +100,12 @@ Optional follow-ups:
             Known-answer vectors for JWK/thumbprint (cross-checked vs Python) + the
             signature is cryptographically VERIFIED (ECDSA is randomized), both jwk and
             kid modes. ASan-clean.
-      - [ ] CSR → ACME state machine (vs LE staging) → HTTP-01 responder
+      - [x] certificate key + CSR (src/acme/acme_csr.c; shared EC key load-or-create
+            factored into acme_key.c) — PKCS#10 CSR with the domains as Subject
+            Alternative Names, base64url(DER). Tested: decode → parse → X509_REQ_verify
+            + all SANs present + key persisted 0600; cross-checked with the real
+            `openssl req -verify` ("verify OK"). ASan-clean.
+      - [ ] ACME state machine (vs LE staging) → HTTP-01 responder
             → storage/reload/renewal → e2e on a public domain.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)

@@ -132,6 +132,11 @@ if(PORTICO_BUILD_TESTS)
         add_executable(jws_test tests/jws_test.c)
         target_link_libraries(jws_test PRIVATE portico_acme)
         add_test(NAME jws COMMAND jws_test)
+
+        # ACME certificate key + CSR: decode → parse → verify signature → SAN check.
+        add_executable(csr_test tests/csr_test.c)
+        target_link_libraries(csr_test PRIVATE portico_acme)
+        add_test(NAME csr COMMAND csr_test)
     endif()
 
     find_program(PYTHON3 python3)

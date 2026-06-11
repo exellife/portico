@@ -7,48 +7,21 @@
 
 #ifdef PORTICO_TLS
 
+#include "acme_crypto.h"
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <openssl/evp.h>
-#include <openssl/pem.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
 #include <openssl/bn.h>
 #include <openssl/sha.h>
-#include <openssl/obj_mac.h>
 #include <openssl/core_names.h>
 
 struct portico_acme_key { EVP_PKEY *pkey; };
 
-static EVP_PKEY *gen_p256(void) {
-    EVP_PKEY *pkey = NULL;
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
-    if (!c) return NULL;
-    if (EVP_PKEY_keygen_init(c) == 1 &&
-        EVP_PKEY_CTX_set_ec_paramgen_curve_nid(c, NID_X9_62_prime256v1) == 1)
-        EVP_PKEY_keygen(c, &pkey);
-    EVP_PKEY_CTX_free(c);
-    return pkey;
-}
-
 portico_acme_key_t *portico_acme_key_load_or_create(const char *path) {
-    EVP_PKEY *pkey = NULL;
-    FILE *f = path ? fopen(path, "r") : NULL;
-    if (f) { pkey = PEM_read_PrivateKey(f, NULL, NULL, NULL); fclose(f); }
-    if (!pkey) {
-        pkey = gen_p256();
-        if (!pkey) return NULL;
-        if (path) {
-            int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);   /* private key: 0600 */
-            if (fd >= 0) {
-                FILE *w = fdopen(fd, "w");
-                if (w) { PEM_write_PrivateKey(w, pkey, NULL, NULL, 0, NULL, NULL); fclose(w); }
-                else close(fd);
-            }
-        }
-    }
+    EVP_PKEY *pkey = acme_pkey_load_or_create(path);
+    if (!pkey) return NULL;
     portico_acme_key_t *k = calloc(1, sizeof *k);
     if (!k) { EVP_PKEY_free(pkey); return NULL; }
     k->pkey = pkey;
