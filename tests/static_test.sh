@@ -284,4 +284,23 @@ chkp "/static/../etc/passwd 403"   "$(curl -s -o /dev/null -w '%{http_code}' --p
 chkp "/f.txt outside mount -> 404" "$(code /f.txt)"            "404"
 chkp "/staticfoo not a segment"    "$(code /staticfoo)"        "404"
 
-[ "$RC1" = 0 ] && [ "$RC2" = 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }
+# ---- SPA fallback + directory trailing-slash redirect (third server) ----
+kill "$SRV" 2>/dev/null; SRV=
+mkdir -p "$ROOT/dir"; printf 'APP-INDEX' > "$ROOT/index.html"; printf 'DIR-INDEX' > "$ROOT/dir/index.html"
+PORT3=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+STATIC_ROOT="$ROOT" STATIC_SPA=index.html STATIC_DIR_REDIRECT=1 PORT="$PORT3" "$BIN" >/tmp/portico_static_srv3.log 2>&1 &
+SRV=$!
+for i in $(seq 1 80); do (exec 3<>/dev/tcp/127.0.0.1/"$PORT3") 2>/dev/null && { exec 3>&-; break; }; sleep 0.1; done
+RC3=0
+echo "== SPA fallback + dir redirect =="
+chkp() { if [ "$2" = "$3" ]; then echo "  ok    $1 ($2)"; else echo "  FAIL  $1: got $2 want $3"; RC3=1; fi; }
+get3()  { curl -s "http://127.0.0.1:$PORT3$1"; }
+code3() { curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT3$1"; }
+chkp "SPA route -> index (200)"      "$(code3 /users/42)"             "200"
+chkp "SPA route body = index"        "$(get3 /users/42)"             "APP-INDEX"
+chkp "real file still served"        "$(code3 /f.txt)"                "200"
+chkp "dir /dir (no slash) -> 301"    "$(code3 /dir)"                  "301"
+chkp "dir /dir -> Location /dir/"    "$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:$PORT3/dir" | sed 's|.*://[^/]*||')" "/dir/"
+chkp "dir /dir/ -> index (200)"      "$(get3 /dir/)"                  "DIR-INDEX"
+
+[ "$RC1" = 0 ] && [ "$RC2" = 0 ] && [ "$RC3" = 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

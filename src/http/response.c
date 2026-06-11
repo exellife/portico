@@ -48,6 +48,7 @@ const char *portico_http_reason(int status) {
         case 201: return "Created";
         case 204: return "No Content";
         case 206: return "Partial Content";
+        case 301: return "Moved Permanently";
         case 304: return "Not Modified";
         case 400: return "Bad Request";
         case 401: return "Unauthorized";

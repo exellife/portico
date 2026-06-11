@@ -273,6 +273,14 @@ the foundation, built first as a standalone, isolation-tested library.
       emitted on file responses (and 304s), e.g. `public, max-age=31536000, immutable`
       for fingerprinted assets. Per-route policy is the caller's (different opts per
       mount). Conditional-GET revalidation still works alongside it.
+- [x] **SPA fallback + directory trailing-slash redirect**
+      (`portico_static_opts_t.spa_fallback`, `.dir_redirect`) — opt-in. spa_fallback:
+      a GET/HEAD that would 404 serves the fallback file (200) so history-API client
+      routing works (real files + asset 404s on other methods unaffected; traversal
+      safety preserved — the fallback is realpath-checked). dir_redirect: `/dir` →
+      `301 /dir/` (Location built from the request path) so relative URLs in the index
+      resolve correctly. Tested (SPA route → index, real file unaffected, 301 +
+      Location, `/dir/` → index) across 3 backends, ASan-clean, suite 11/11.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 

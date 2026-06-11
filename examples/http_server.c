@@ -113,6 +113,8 @@ int main(void) {
     g_static.index        = getenv("STATIC_INDEX");      /* NULL = index.html */
     g_static.precompressed = getenv("STATIC_PRECOMPRESSED") != NULL;  /* serve .br/.gz */
     g_static.cache_control = getenv("STATIC_CACHE_CONTROL");          /* e.g. "max-age=3600" */
+    g_static.spa_fallback  = getenv("STATIC_SPA");                    /* e.g. "index.html" */
+    g_static.dir_redirect  = getenv("STATIC_DIR_REDIRECT") != NULL;   /* /dir -> 301 /dir/ */
 
     cb.on_binary_message = on_binary;
     cb.on_http_request   = on_http;

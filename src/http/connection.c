@@ -555,7 +555,18 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
         res->status = 414; return -1;
     }
     if (!realpath(docroot, rootreal))   { res->status = 500; return -1; }
-    if (!realpath(candidate, resolved)) { res->status = 404; return -1; }
+    if (!realpath(candidate, resolved)) {
+        /* SPA fallback: an unresolved path serves the fallback file (client-side
+         * routing handles the URL). Only for GET/HEAD; asset 404s elsewhere stay 404. */
+        if (opts->spa_fallback && *opts->spa_fallback &&
+            (portico_req_method_is(req, "GET") || portico_req_method_is(req, "HEAD")) &&
+            (size_t)snprintf(candidate, sizeof candidate, "%s/%s", docroot, opts->spa_fallback) < sizeof candidate &&
+            realpath(candidate, resolved)) {
+            /* fall through with `resolved` = the fallback; docroot check below applies */
+        } else {
+            res->status = 404; return -1;
+        }
+    }
     size_t rl = strlen(rootreal);
     if (strncmp(resolved, rootreal, rl) != 0 || (resolved[rl] != '/' && resolved[rl] != '\0')) {
         res->status = 403; return -1;   /* escaped the docroot */
@@ -570,6 +581,17 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
      * realpath so the index can't be a symlink escaping the docroot either. */
     if (S_ISDIR(st.st_mode)) {
         close(fd);
+        /* Trailing-slash redirect: /dir → 301 /dir/ so relative URLs in the index
+         * resolve against the directory, not its parent. */
+        if (opts->dir_redirect && (req->path_len == 0 || req->path[req->path_len - 1] != '/')) {
+            char loc[PATH_MAX];
+            int ln = snprintf(loc, sizeof loc, "%.*s/", (int)req->path_len, req->path);
+            if (ln > 0 && (size_t)ln < sizeof loc) {
+                portico_res_header(res, "Location", loc);
+                res->status = 301; res->is_file = 0;
+                return 0;
+            }
+        }
         /* No directory listing: serve the index file; if it's absent/unreadable,
          * 403 (the convention nginx/Apache use, not a 404 that maps the tree). */
         if (!*index) { res->status = 403; return -1; }

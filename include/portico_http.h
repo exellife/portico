@@ -94,6 +94,12 @@ typedef struct {
     const char *cache_control;/* if set, emitted as Cache-Control on file responses,
                                * e.g. "public, max-age=31536000, immutable" for
                                * fingerprinted assets, or "no-cache" for HTML. NULL = none */
+    const char *spa_fallback; /* if set (e.g. "index.html"), a GET/HEAD that would
+                               * 404 serves this file (200) instead — for client-side
+                               * (history-API) routing. NULL = normal 404s. */
+    int         dir_redirect; /* when set, a directory request without a trailing
+                               * slash (/dir) 301-redirects to /dir/ so relative URLs
+                               * in the index resolve correctly. */
 } portico_static_opts_t;
 
 /* Like portico_res_file but with URL-prefix stripping and a directory index, so a
