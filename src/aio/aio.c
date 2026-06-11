@@ -77,10 +77,10 @@ void portico_aio_post_completion(portico_aio_t *a, portico_aio_cb_t cb,
 
     /* Coalesce wakeups: only the first completion since the last drain actually
      * writes the eventfd. A burst of N completions costs one notify syscall, not
-     * N. The enqueue above happens-before this exchange, and drain() resets
-     * `notified` BEFORE it pops, so any completion drain misses is guaranteed to
-     * either be popped now or to leave `notified == 0` for the next poster to
-     * re-signal — no lost wakeups. */
+     * N. The enqueue above happens-before this exchange; drain() reads the eventfd
+     * then resets `notified` then pops, so any completion drain's scan misses is
+     * guaranteed to leave `notified == 0` for this exchange to re-signal — no lost
+     * wakeups (see the ordering rationale in portico_aio_drain). */
     if (atomic_exchange_explicit(&a->notified, 1, memory_order_acq_rel) == 0) {
         uint64_t one = 1;
         ssize_t w = write(a->wakeup_fd, &one, sizeof one);
@@ -98,13 +98,18 @@ int portico_aio_pread(portico_aio_t *a, int fd, void *buf, size_t len, off_t off
 int portico_aio_drain(portico_aio_t *a) {
     if (!a) return 0;
 
-    /* Reset the coalescing flag BEFORE draining the queue, so any completion that
-     * lands while we drain re-arms the eventfd (see post_completion). */
-    atomic_store_explicit(&a->notified, 0, memory_order_release);
-
-    /* Clear the eventfd counter (EFD_NONBLOCK → EAGAIN once empty). */
+    /* Clear the eventfd's level-trigger FIRST, then re-arm the coalescing flag,
+     * then drain. Order matters: a poster does `enqueue; if(exchange(notified,1)==0)
+     * write(fd)`. If we reset `notified` before reading the fd, a poster that runs
+     * between the reset and the read writes the fd, we then consume that write, yet
+     * its item may be enqueued after our pop scan — leaving it stranded with
+     * notified==1 and no pending signal (a lost wakeup that stalls that op). Reading
+     * the fd first, then resetting notified, guarantees any item enqueued after the
+     * reset re-writes the fd (notified==0 → poster writes), and any item enqueued
+     * before the pop scan is drained below. */
     uint64_t cnt;
     while (read(a->wakeup_fd, &cnt, sizeof cnt) == (ssize_t)sizeof cnt) { }
+    atomic_store_explicit(&a->notified, 0, memory_order_release);
 
     if (a->ops->reap) a->ops->reap(a);
 
