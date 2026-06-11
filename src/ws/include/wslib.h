@@ -71,6 +71,13 @@ typedef enum {
  * Configuration Structure
  * ============================================================================ */
 
+/* A per-host TLS certificate for multi-domain (SNI) hosting on one listener. */
+typedef struct {
+    const char *hostname;             /* SNI name; exact or "*.example.com" wildcard */
+    const char *cert_file;            /* PEM certificate chain (leaf first) */
+    const char *key_file;             /* PEM private key */
+} ws_tls_sni_cert_t;
+
 typedef struct {
     /* Network settings */
     uint16_t port;                    /* Server port */
@@ -108,6 +115,12 @@ typedef struct {
      * fails rather than silently downgrading to plaintext. PEM files on disk. */
     const char *tls_cert_file;        /* PEM certificate chain (leaf first) */
     const char *tls_key_file;         /* PEM private key */
+
+    /* Multi-domain HTTPS on one IP: additional per-host certs, selected during the
+     * TLS handshake by SNI. tls_cert_file above is the default (presented when SNI
+     * is absent or matches none). Route the request itself by the Host header. */
+    const ws_tls_sni_cert_t *tls_sni_certs;
+    size_t                   tls_sni_cert_count;
 
     /* Trust proxy headers for the client IP. Set ONLY when behind a reverse
      * proxy you control that overwrites X-Real-IP / X-Forwarded-For — otherwise

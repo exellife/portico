@@ -104,6 +104,21 @@ int main(void) {
     cfg.tls_key_file  = getenv("TLS_KEY");
     cfg.trust_proxy   = getenv("TRUST_PROXY") != NULL;   /* honor X-Forwarded-For/X-Real-IP */
 
+    /* Multi-domain HTTPS via SNI: TLS_SNI="host:cert:key;host2:cert2:key2". */
+    static ws_tls_sni_cert_t sni[16]; size_t sni_n = 0;
+    char *sni_env = getenv("TLS_SNI");
+    if (sni_env) {
+        char *buf = strdup(sni_env);   /* persists for the program's life */
+        for (char *e = strtok(buf, ";"); e && sni_n < 16; e = strtok(NULL, ";")) {
+            char *cert = strchr(e, ':'); if (!cert) continue; *cert++ = '\0';
+            char *key  = strchr(cert, ':'); if (!key) continue; *key++ = '\0';
+            sni[sni_n].hostname = e; sni[sni_n].cert_file = cert; sni[sni_n].key_file = key;
+            sni_n++;
+        }
+        cfg.tls_sni_certs = sni;
+        cfg.tls_sni_cert_count = sni_n;
+    }
+
     g_server = ws_server_create(&cfg);
     if (!g_server) { fprintf(stderr, "create failed\n"); return 1; }
 

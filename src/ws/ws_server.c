@@ -267,7 +267,23 @@ ws_server_t* ws_server_create_internal(const ws_config_t *config) {
             free(server);
             return NULL;
         }
-        WS_DEBUG_LOG("TLS enabled (cert=%s)", config->tls_cert_file);
+        /* Per-host (SNI) certs for multi-domain HTTPS. Fail closed if one can't be
+         * loaded, rather than silently presenting the wrong cert for that domain. */
+        for (size_t i = 0; i < config->tls_sni_cert_count; i++) {
+            const ws_tls_sni_cert_t *c = &config->tls_sni_certs[i];
+            if (ws_tls_ctx_add_sni(server->tls_ctx, c->hostname, c->cert_file, c->key_file) != 0) {
+                WS_ERROR_LOG("Failed to load SNI cert for '%s'", c->hostname ? c->hostname : "?");
+                ws_tls_ctx_free(server->tls_ctx);
+                close(server->listen_fd);
+                free(server->thread_loads);
+                free(server->threads);
+                ws_connection_hash_destroy(server->global_hash);
+                free(server);
+                return NULL;
+            }
+        }
+        WS_DEBUG_LOG("TLS enabled (cert=%s, %zu SNI cert(s))",
+                     config->tls_cert_file, config->tls_sni_cert_count);
     }
 
     WS_DEBUG_LOG("WebSocket server created on port %d with %d threads",

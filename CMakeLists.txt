@@ -145,6 +145,9 @@ if(PORTICO_BUILD_TESTS)
         if(PORTICO_TLS AND OPENSSL_BIN)
             add_test(NAME tls
                 COMMAND bash ${CMAKE_SOURCE_DIR}/tests/tls_test.sh $<TARGET_FILE:http_server>)
+            # SNI multi-cert: a different per-domain cert is presented by SNI server_name.
+            add_test(NAME sni
+                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/sni_test.sh $<TARGET_FILE:http_server>)
         endif()
     endif()
 endif()

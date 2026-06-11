@@ -61,10 +61,22 @@ core-I/O surgery is isolated:
       green; ASan clean.
 
 **TLS is COMPLETE** — portico serves HTTPS + WSS standalone (no nginx). Enable with
-`ws_config_t.tls_cert_file/tls_key_file`; plaintext stays the default. Optional follow-ups:
+`ws_config_t.tls_cert_file/tls_key_file`; plaintext stays the default.
+- [x] **SNI multi-certificate** (`ws_config_t.tls_sni_certs[]`, src/ws/ws_tls.c) —
+      multiple HTTPS domains on one IP: each `{hostname, cert, key}` loads its own
+      SSL_CTX, and `SSL_CTX_set_tlsext_servername_callback` selects it during the
+      handshake by the ClientHello server_name (exact or `*.example.com` single-label
+      wildcard); no match → the default cert. The opaque tls_ctx is now a group
+      (default + per-host CTXs), transparent to callers. Route the request by `Host`.
+      Tested (alpha/beta/wildcard/unknown→default/no-SNI→default via curl --resolve)
+      and ASan-clean; suite 12/12. This is the HTTPS half of multi-site-on-one-IP;
+      the HTTP half (Host routing) is already doable in the handler today.
+Optional follow-ups:
 - [ ] SIGHUP cert reload (hot-rotate without a restart).
 - [ ] ALPN (advertise `http/1.1`); later HTTP/2 if ever wanted.
 - [ ] Optional ACME, or document Caddy as the zero-code alternative for easy auto-HTTPS.
+- [ ] Built-in Host→{docroot, vhost} router helper + Host allow-list (convenience over
+      the per-handler routing that works today).
 
 ---
 

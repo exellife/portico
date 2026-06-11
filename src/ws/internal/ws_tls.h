@@ -20,6 +20,13 @@ int ws_tls_available(void);
 void *ws_tls_ctx_create(const char *cert_file, const char *key_file);
 void  ws_tls_ctx_free(void *ctx);
 
+/* Add a per-host certificate to a context group created by ws_tls_ctx_create:
+ * during the TLS handshake, a ClientHello whose SNI server_name matches `hostname`
+ * (case-insensitive exact, or a leading "*." single-label wildcard) is served this
+ * cert instead of the default. Returns 0 on success, -1 on failure (or no TLS). */
+int   ws_tls_ctx_add_sni(void *group, const char *hostname,
+                         const char *cert_file, const char *key_file);
+
 /* ---- per-connection (server side) ----------------------------------------- */
 
 /* ws_tls_do_handshake return codes. */
