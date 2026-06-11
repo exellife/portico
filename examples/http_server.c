@@ -12,6 +12,7 @@
 
 static ws_server_t *g_server = NULL;
 static volatile sig_atomic_t g_running = 1;
+static portico_static_opts_t g_static;   /* STATIC_ROOT/STATIC_PREFIX, from main */
 
 /* --- WebSocket: raw binary echo --- */
 static int on_binary(int fd, const void *data, size_t len, void *u) {
@@ -57,9 +58,10 @@ static int on_http(const portico_request_t *req, portico_response_t *res, void *
         portico_res_header(res, "Allow", "GET, POST");
         return 0;
     }
-    /* Static files: serve any other GET from STATIC_ROOT (async, traversal-safe). */
+    /* Static files: serve any other GET from STATIC_ROOT (async, traversal-safe),
+     * with directory index + optional STATIC_PREFIX mounting. */
     if (static_root && portico_req_method_is(req, "GET")) {
-        portico_res_file(res, req, static_root);
+        portico_res_static(res, req, &g_static);
         return 0;
     }
     portico_res_text(res, 404, "not found\n");
@@ -106,9 +108,13 @@ int main(void) {
     if (!g_server) { fprintf(stderr, "create failed\n"); return 1; }
 
     ws_callbacks_t cb = {0};
+    g_static.docroot    = getenv("STATIC_ROOT");      /* serve this folder, if set */
+    g_static.url_prefix = getenv("STATIC_PREFIX");     /* e.g. "/static"; NULL = mount at / */
+    g_static.index      = getenv("STATIC_INDEX");      /* NULL = index.html */
+
     cb.on_binary_message = on_binary;
     cb.on_http_request   = on_http;
-    cb.http_user_data    = getenv("STATIC_ROOT");  /* docroot for static serving */
+    cb.http_user_data    = (void *)g_static.docroot;  /* non-NULL enables static serving */
     cb.on_accept         = on_accept;          /* IP gate (demo) */
     cb.accept_user_data  = getenv("DENY_IP");  /* reject this IP, if set */
 

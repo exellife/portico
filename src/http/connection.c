@@ -396,12 +396,28 @@ static int req_header_copy(const portico_request_t *req, const char *name, char 
     return 1;
 }
 
-int portico_res_file(portico_response_t *res, const portico_request_t *req, const char *docroot) {
-    if (!res || !req || !docroot) { if (res) res->status = 500; return -1; }
+int portico_res_static(portico_response_t *res, const portico_request_t *req,
+                       const portico_static_opts_t *opts) {
+    if (!res || !req || !opts || !opts->docroot) { if (res) res->status = 500; return -1; }
+    const char *docroot = opts->docroot;
+    const char *index   = opts->index ? opts->index : "index.html";   /* "" disables */
+
+    /* URL-prefix stripping: serve this docroot mounted under opts->url_prefix
+     * (e.g. "/static"). The prefix must be a whole leading path segment; the mount
+     * root (path == prefix) maps to "/". A no-prefix path passes through. */
+    const char *upath = req->path;
+    size_t ulen = req->path_len;
+    if (opts->url_prefix && *opts->url_prefix) {
+        size_t pl = strlen(opts->url_prefix);
+        if (ulen < pl || memcmp(upath, opts->url_prefix, pl) != 0) { res->status = 404; return -1; }
+        upath += pl; ulen -= pl;
+        if (ulen == 0) { upath = "/"; ulen = 1; }      /* mount root → directory index */
+        else if (upath[0] != '/') { res->status = 404; return -1; }   /* not a full segment */
+    }
 
     char decoded[PATH_MAX];
     size_t dlen = 0;
-    url_decode_path(req->path, req->path_len, decoded, sizeof decoded, &dlen);
+    url_decode_path(upath, ulen, decoded, sizeof decoded, &dlen);
     /* Path must be absolute and contain no NUL (decoded %00 would truncate paths). */
     if (dlen == 0 || decoded[0] != '/' || memchr(decoded, '\0', dlen) != NULL) {
         res->status = 400; return -1;
@@ -424,7 +440,28 @@ int portico_res_file(portico_response_t *res, const portico_request_t *req, cons
     int fd = open(resolved, O_RDONLY | O_CLOEXEC);
     if (fd < 0) { res->status = (errno == EACCES) ? 403 : 404; return -1; }
     struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { close(fd); res->status = 404; return -1; }
+    if (fstat(fd, &st) != 0) { close(fd); res->status = 404; return -1; }
+
+    /* Directory → serve its index file (no directory listing). Re-resolve through
+     * realpath so the index can't be a symlink escaping the docroot either. */
+    if (S_ISDIR(st.st_mode)) {
+        close(fd);
+        /* No directory listing: serve the index file; if it's absent/unreadable,
+         * 403 (the convention nginx/Apache use, not a 404 that maps the tree). */
+        if (!*index) { res->status = 403; return -1; }
+        char ipath[PATH_MAX];
+        if ((size_t)snprintf(ipath, sizeof ipath, "%s/%s", resolved, index) >= sizeof ipath) {
+            res->status = 414; return -1;
+        }
+        if (!realpath(ipath, resolved) ||
+            strncmp(resolved, rootreal, rl) != 0 || (resolved[rl] != '/' && resolved[rl] != '\0')) {
+            res->status = 403; return -1;
+        }
+        fd = open(resolved, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) { res->status = 403; return -1; }
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { close(fd); res->status = 403; return -1; }
+    }
+    if (!S_ISREG(st.st_mode)) { close(fd); res->status = 404; return -1; }
     if (st.st_size > PORTICO_FILE_MAX) { close(fd); res->status = 413; return -1; }
 
     /* Validators for conditional + range requests. */
@@ -496,6 +533,11 @@ int portico_res_file(portico_response_t *res, const portico_request_t *req, cons
     res->file_offset = start;
     res->file_size = length;   /* bytes to serve (range length, or full size) */
     return 0;
+}
+
+int portico_res_file(portico_response_t *res, const portico_request_t *req, const char *docroot) {
+    portico_static_opts_t opts = { .docroot = docroot, .url_prefix = NULL, .index = NULL };
+    return portico_res_static(res, req, &opts);
 }
 
 /* In-flight file transfer, carried from submit to the read completion. */

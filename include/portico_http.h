@@ -82,4 +82,20 @@ void portico_res_text(portico_response_t *res, int status, const char *text);
 int portico_res_file(portico_response_t *res, const portico_request_t *req,
                      const char *docroot);
 
+/* Options for serving a docroot as a mounted static site. */
+typedef struct {
+    const char *docroot;      /* filesystem root (required) */
+    const char *url_prefix;   /* strip this leading URL segment before resolving,
+                               * e.g. "/static" (no trailing slash); NULL = none */
+    const char *index;        /* directory index filename; NULL = "index.html",
+                               * "" = disable (a directory request → 403) */
+} portico_static_opts_t;
+
+/* Like portico_res_file but with URL-prefix stripping and a directory index, so a
+ * folder can be mounted under a URL prefix and "/" (or any subdir) serves its
+ * index file. Same async + traversal/symlink-safety + Range/conditional behavior.
+ * portico_res_file(res, req, docroot) == this with no prefix and index.html. */
+int portico_res_static(portico_response_t *res, const portico_request_t *req,
+                       const portico_static_opts_t *opts);
+
 #endif /* PORTICO_HTTP_H */

@@ -20,6 +20,8 @@ printf 'body{color:red}'             > "$ROOT/assets/site.css"
 head -c 250000 /dev/urandom          > "$ROOT/big.bin"
 head -c 1500000 /dev/urandom         > "$ROOT/stream.bin"   # > 256KB → streamed (chunked)
 python3 -c "open('$ROOT/f.txt','wb').write(bytes(range(256))*20)"   # 5120 predictable bytes
+mkdir -p "$ROOT/sub" "$ROOT/noindex"
+printf 'SUBDIR INDEX' > "$ROOT/sub/index.html"                     # directory index
 # A symlink pointing outside the docroot must NOT be served.
 ln -s /etc/passwd "$ROOT/escape.txt"
 
@@ -31,6 +33,7 @@ for i in $(seq 1 80); do
   sleep 0.1
 done
 
+set +e   # capture the test exit codes ourselves below
 PORT="$PORT" ROOT="$ROOT" python3 - <<'PY'
 import http.client, os, sys, hashlib
 PORT=int(os.environ["PORT"]); ROOT=os.environ["ROOT"]
@@ -168,6 +171,37 @@ chk("If-Range match -> 206", s==206 and b==fdata[0:10], f"status={s}")
 s,b,h = req_full("/f.txt", {"Range":"bytes=0-9", "If-Range": '"stale"'})
 chk("If-Range mismatch -> 200 full", s==200 and b==fdata, f"status={s}")
 
+# ---- directory index ----
+s,b,_,_ = get("/sub/")
+chk("directory -> index.html", s==200 and b==b"SUBDIR INDEX", f"status={s}")
+s,b,_,_ = get("/sub")
+chk("directory (no trailing slash) -> index", s==200 and b==b"SUBDIR INDEX", f"status={s}")
+s,_,_,_ = get("/noindex/")
+chk("directory without index -> 403", s==403, f"status={s}")
+
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)
 PY
+RC1=$?
+
+# ---- URL-prefix stripping: a second server mounting the docroot at /static ----
+kill "$SRV" 2>/dev/null; SRV=
+PORT2=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+STATIC_ROOT="$ROOT" STATIC_PREFIX="/static" PORT="$PORT2" "$BIN" >/tmp/portico_static_srv2.log 2>&1 &
+SRV=$!
+for i in $(seq 1 80); do
+  (exec 3<>/dev/tcp/127.0.0.1/"$PORT2") 2>/dev/null && { exec 3>&-; break; }
+  sleep 0.1
+done
+code() { curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT2$1"; }
+RC2=0
+echo "== prefix mount (/static) =="
+chkp() { if [ "$2" = "$3" ]; then echo "  ok    $1 ($2)"; else echo "  FAIL  $1: got $2 want $3"; RC2=1; fi; }
+chkp "/static/f.txt served"        "$(code /static/f.txt)"     "200"
+chkp "/static/sub/ -> dir index"   "$(code /static/sub/)"      "200"
+chkp "/static/escape.txt symlink"  "$(code /static/escape.txt)" "403"
+chkp "/static/../etc/passwd 403"   "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$PORT2/static/../../../etc/passwd")" "403"
+chkp "/f.txt outside mount -> 404" "$(code /f.txt)"            "404"
+chkp "/staticfoo not a segment"    "$(code /staticfoo)"        "404"
+
+[ "$RC1" = 0 ] && [ "$RC2" = 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

@@ -215,8 +215,18 @@ the foundation, built first as a standalone, isolation-tested library.
         origin. Tested: 13 Range/conditional assertions (offsets, suffix, 416, 304,
         If-Range match/mismatch, ranged streamed file) across all 3 backends,
         ASan-clean, suite 11/11.
-      Follow-ups: multipart/byteranges (multi-range), directory index, URL-prefix
-      stripping, HEAD, read-ahead (double-buffer) for streaming throughput.
+- [x] **Directory index + URL-prefix stripping** (src/http/connection.c) — new
+      `portico_res_static(res, req, opts)` with `{docroot, url_prefix, index}`;
+      `portico_res_file` is the no-prefix/index.html wrapper. A directory request
+      serves `<dir>/<index>` (default index.html; re-realpath'd so the index can't
+      symlink out either), 403 when absent/disabled (nginx convention). `url_prefix`
+      mounts the docroot under a whole leading URL segment (e.g. `/static`), with the
+      mount root → directory index; a non-segment match (`/staticfoo`) or
+      outside-mount path → 404. Traversal/symlink safety preserved. Tested e2e
+      (index served with/without trailing slash, no-index 403, prefix mount + its
+      404s) across all 3 backends, ASan-clean, suite 11/11.
+      Follow-ups: HEAD, multipart/byteranges (multi-range), read-ahead (double-buffer)
+      for streaming throughput, io_uring batched-submit/SQPOLL tuning.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 
