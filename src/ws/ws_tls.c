@@ -24,6 +24,20 @@ typedef struct {
     size_t   n;
 } ws_tls_group_t;
 
+/* ALPN: portico speaks HTTP/1.1. Select it when the client offers it (so an
+ * h2-capable browser uses 1.1 instead of attempting HTTP/2 we don't serve); when
+ * it isn't offered, don't acknowledge ALPN and proceed (handshake still completes,
+ * and the connection is HTTP/1.1 anyway). This is also the hook for adding h2. */
+static int alpn_cb(SSL *ssl, const unsigned char **out, unsigned char *outlen,
+                   const unsigned char *in, unsigned int inlen, void *arg) {
+    static const unsigned char protos[] = { 8, 'h','t','t','p','/','1','.','1' };  /* ALPN wire format */
+    (void)ssl; (void)arg;
+    if (SSL_select_next_proto((unsigned char **)out, outlen, protos, sizeof protos,
+                              in, inlen) != OPENSSL_NPN_NEGOTIATED)
+        return SSL_TLSEXT_ERR_NOACK;
+    return SSL_TLSEXT_ERR_OK;
+}
+
 /* Build a hardened SSL_CTX from a cert/key pair (the shared secure defaults). */
 static SSL_CTX *make_ctx(const char *cert_file, const char *key_file) {
     if (!cert_file || !key_file) return NULL;
@@ -35,6 +49,7 @@ static SSL_CTX *make_ctx(const char *cert_file, const char *key_file) {
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_options(ctx, SSL_OP_NO_RENEGOTIATION | SSL_OP_CIPHER_SERVER_PREFERENCE);
     SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    SSL_CTX_set_alpn_select_cb(ctx, alpn_cb, NULL);   /* advertise/negotiate http/1.1 */
 
     if (SSL_CTX_use_certificate_chain_file(ctx, cert_file) <= 0) {
         fprintf(stderr, "portico tls: failed to load certificate '%s'\n", cert_file);

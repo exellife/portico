@@ -73,7 +73,10 @@ core-I/O surgery is isolated:
       the HTTP half (Host routing) is already doable in the handler today.
 Optional follow-ups:
 - [ ] SIGHUP cert reload (hot-rotate without a restart).
-- [ ] ALPN (advertise `http/1.1`); later HTTP/2 if ever wanted.
+- [x] **ALPN** — every SSL_CTX selects `http/1.1` via SSL_CTX_set_alpn_select_cb, so an
+      h2-capable client uses 1.1 instead of attempting HTTP/2 (and clients that require
+      an ALPN response get one). The hook for adding h2 later. Tested (s_client -alpn
+      h2,http/1.1 → http/1.1).
 - [ ] Optional ACME, or document Caddy as the zero-code alternative for easy auto-HTTPS.
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a
       request to a per-host static config by the Host header: strips `:port`, matches

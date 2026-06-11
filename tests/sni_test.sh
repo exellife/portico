@@ -42,5 +42,10 @@ chk "x.wild.test -> wildcard cert" "$(cn x.wild.test)"    "*.wild.test"
 chk "unknown.test -> default cert" "$(cn unknown.test)"   "default"
 chk "no SNI (IP)  -> default cert" "$(cn -)"              "default"
 
+# ALPN: a client offering h2,http/1.1 must be steered to http/1.1.
+alpn=$(echo | openssl s_client -connect 127.0.0.1:"$PORT" -alpn h2,http/1.1 2>/dev/null \
+        | sed -n 's/^ALPN protocol: //p' | head -1)
+chk "ALPN negotiates http/1.1"     "$alpn"                "http/1.1"
+
 echo
 [ "$fail" = 0 ] && echo "PASS ($ok ok)" || { echo "FAIL ($fail failed)"; exit 1; }
