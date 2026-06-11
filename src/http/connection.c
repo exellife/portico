@@ -528,6 +528,15 @@ int portico_res_static(portico_response_t *res, const portico_request_t *req,
     } else {
         res->status = 200;
     }
+    /* HEAD: same status + headers (incl. Content-Range for a ranged HEAD) but no
+     * body — and no file read. The builder emits Content-Length from file_size. */
+    if (portico_req_method_is(req, "HEAD")) {
+        close(fd);
+        res->head_only = 1;
+        res->file_size = length;
+        res->is_file = 0;
+        return 0;
+    }
     res->is_file = 1;
     res->file_fd = fd;
     res->file_offset = start;

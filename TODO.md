@@ -225,8 +225,15 @@ the foundation, built first as a standalone, isolation-tested library.
       outside-mount path → 404. Traversal/symlink safety preserved. Tested e2e
       (index served with/without trailing slash, no-index 403, prefix mount + its
       404s) across all 3 backends, ASan-clean, suite 11/11.
-      Follow-ups: HEAD, multipart/byteranges (multi-range), read-ahead (double-buffer)
-      for streaming throughput, io_uring batched-submit/SQPOLL tuning.
+- [x] **HEAD for static files** (src/http/connection.c, response.c) — a HEAD on a
+      file produces the same status + headers as GET (Content-Type, Content-Length,
+      ETag, Last-Modified, Accept-Ranges, and Content-Range/206 for a ranged HEAD)
+      but no body and **no file read** — `portico_res_static` sets a `head_only`
+      response flag and the builder emits Content-Length from file_size with an empty
+      body. Tested (HEAD 200 with correct Content-Length + empty body; ranged HEAD →
+      206 + Content-Range + empty body) across 3 backends, ASan-clean, suite 11/11.
+      Follow-ups: multipart/byteranges (multi-range), read-ahead (double-buffer) for
+      streaming throughput, io_uring batched-submit/SQPOLL tuning.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 

@@ -70,20 +70,24 @@ const char *portico_http_reason(int status) {
 int portico_http_build_response(portico_response_t *res, uint8_t **out, size_t *out_len) {
     if (res->status == 0) res->status = 200;
 
+    /* HEAD: advertise the resource's Content-Length (file_size) but send no body. */
+    size_t clen = res->head_only ? (size_t)res->file_size : res->body_len;
+    size_t blen = res->head_only ? 0 : res->body_len;
+
     char head[PORTICO_RES_HEADERS_CAP + 256];
     int hn = snprintf(head, sizeof head,
                       "HTTP/1.1 %d %s\r\n%.*sContent-Length: %zu\r\nConnection: %s\r\n\r\n",
                       res->status, portico_http_reason(res->status),
                       (int)res->headers_len, res->headers,
-                      res->body_len,
+                      clen,
                       res->keep_alive ? "keep-alive" : "close");
     if (hn <= 0 || (size_t)hn >= sizeof head) return -1;
 
-    size_t total = (size_t)hn + res->body_len;
+    size_t total = (size_t)hn + blen;
     uint8_t *buf = malloc(total ? total : 1);
     if (!buf) return -1;
     memcpy(buf, head, (size_t)hn);
-    if (res->body_len) memcpy(buf + hn, res->body, res->body_len);
+    if (blen) memcpy(buf + hn, res->body, blen);
     *out = buf;
     *out_len = total;
     return 0;

@@ -179,6 +179,23 @@ chk("directory (no trailing slash) -> index", s==200 and b==b"SUBDIR INDEX", f"s
 s,_,_,_ = get("/noindex/")
 chk("directory without index -> 403", s==403, f"status={s}")
 
+# ---- HEAD: same status + headers as GET, but no body and no file read ----
+def head(path, headers=None):
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+    c.request("HEAD", path, headers=headers or {})
+    r = c.getresponse(); body = r.read()
+    h = {k.lower(): v for k, v in r.getheaders()}
+    c.close()
+    return r.status, body, h
+s,b,h = head("/f.txt")
+chk("HEAD -> 200, Content-Length, empty body",
+    s==200 and h.get("content-length")==str(N) and b==b"" and bool(h.get("etag")),
+    f"status={s} cl={h.get('content-length')} blen={len(b)}")
+s,b,h = head("/f.txt", {"Range":"bytes=0-99"})
+chk("ranged HEAD -> 206 + Content-Range, empty body",
+    s==206 and h.get("content-range")==f"bytes 0-99/{N}" and h.get("content-length")=="100" and b==b"",
+    f"status={s} cr={h.get('content-range')}")
+
 print(f"\n{'PASS' if fail==0 else 'FAIL'}  ({ok} ok, {fail} failed)")
 sys.exit(1 if fail else 0)
 PY

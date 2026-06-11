@@ -26,6 +26,8 @@ struct portico_response {
     int       file_fd;
     long long file_offset;
     long long file_size;
+    /* HEAD response: emit Content-Length = file_size but no body (no file read). */
+    int       head_only;
 };
 
 /* Parse one request from `buf` (length `len`) using picohttpparser.

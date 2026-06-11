@@ -60,7 +60,7 @@ static int on_http(const portico_request_t *req, portico_response_t *res, void *
     }
     /* Static files: serve any other GET from STATIC_ROOT (async, traversal-safe),
      * with directory index + optional STATIC_PREFIX mounting. */
-    if (static_root && portico_req_method_is(req, "GET")) {
+    if (static_root && (portico_req_method_is(req, "GET") || portico_req_method_is(req, "HEAD"))) {
         portico_res_static(res, req, &g_static);
         return 0;
     }
