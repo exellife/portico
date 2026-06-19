@@ -140,6 +140,13 @@ if(PORTICO_BUILD_TESTS)
     target_link_libraries(config_test PRIVATE portico)
     add_test(NAME config COMMAND config_test)
 
+    # Hot-swap Host router: atomic table swap + allow-list routing, driven directly
+    # (no server). Needs src/http for the internal response struct the test fabricates.
+    add_executable(router_test tests/router_test.c)
+    target_link_libraries(router_test PRIVATE portico)
+    target_include_directories(router_test PRIVATE src/http)
+    add_test(NAME router COMMAND router_test)
+
     # ACME HTTP-01 responder: token store + well-known matcher + standalone :80
     # listener, exercised over a real loopback HTTP GET. Plaintext, no OpenSSL.
     add_executable(acme_responder_test tests/acme_responder_test.c)
