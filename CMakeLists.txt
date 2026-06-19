@@ -112,9 +112,9 @@ if(PORTICO_BUILD_EXAMPLES)
     target_link_libraries(autobahn_server PRIVATE portico)
     add_executable(stress_server examples/stress_server.c)
     target_link_libraries(stress_server PRIVATE portico)
-    # config-file-driven standalone server (sites[] + SIGHUP hot-reload)
+    # config-file-driven standalone server (sites[] + SIGHUP hot-reload + ACME)
     add_executable(portico_server examples/portico_server.c)
-    target_link_libraries(portico_server PRIVATE portico)
+    target_link_libraries(portico_server PRIVATE portico portico_acme)
 endif()
 
 # --- tests ---
@@ -228,6 +228,10 @@ if(PORTICO_BUILD_TESTS)
             # SIGHUP TLS cert hot-reload: new certs served, server stays up (zero downtime).
             add_test(NAME reload
                 COMMAND bash ${CMAKE_SOURCE_DIR}/tests/reload_test.sh $<TARGET_FILE:http_server>)
+            # Config-driven HTTPS + runtime SNI add over the wire: per-site cert presented
+            # by SNI, then a new HTTPS site added via SIGHUP is served live (no restart).
+            add_test(NAME config_tls
+                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/config_tls_test.sh $<TARGET_FILE:portico_server>)
             # Runtime per-host cert add (ws_server_add_sni_cert): build-group/atomic-swap/
             # rollback lifecycle + ownership, in-process (self-mints certs via openssl).
             add_executable(tls_runtime_test tests/tls_runtime_test.c)
