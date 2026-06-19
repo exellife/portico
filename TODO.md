@@ -154,6 +154,19 @@ Optional follow-ups:
             `curl https://…` 200 with no -k. Deploy runbook: docs/acme-deploy.md.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
+- [ ] **ACME: reissue on a SAN-set change, not just expiry.** Today
+      `portico_acme_cert_needs_renewal` (src/acme/acme_manager.c:41) checks the leaf's
+      *expiry only* — it does not compare the cert's SAN list against the configured
+      `domains`. So adding a domain to a live ACME deployment does NOT trigger a reissue:
+      the existing (unexpired) cert keeps serving and the new host falls back to it with a
+      CN mismatch. Workaround used in production: move the cert aside + restart to force a
+      fresh multi-SAN issuance (a ~10s blip — see below). Fix: have the manager read the
+      current cert's SANs and reissue when they don't cover `domains` (superset check), so
+      `ensure()` reissues on a domain-set change too. Unblocks **seamless runtime ACME
+      domain add**: an engine (cellar) provisioning a new app domain → manager reissues a
+      multi-SAN cert → `on_renewed` hot-swaps it, no restart. Verified live on the Oracle
+      VM that the move-aside+restart path issues a correct 2-SAN cert (portico-test +
+      portico-second .duckdns.org, both trusted).
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a
       request to a per-host static config by the Host header: strips `:port`, matches
       case-insensitively (exact or `*.` wildcard), serves via portico_res_static. A
@@ -217,8 +230,9 @@ What you need to actually run it standalone (no nginx/proxy) and operate it at s
       and the `portico_server` binary — SIGHUP routing reload (CTest `config_reload`) +
       over-the-wire HTTPS runtime SNI add (CTest `config_tls`) + ACME mode. The runtime
       cert/SNI half (`ws_server_add_sni_cert`) is also what the `cellar` engine plugs into.
-      *Open follow-up:* runtime add of a new **ACME** domain still needs a restart (the
-      manager's SAN set is fixed at startup); files-mode runtime HTTPS add works today.
+      *Open follow-up:* runtime add of a new **ACME** domain still needs a restart —
+      root cause is the expiry-only renewal check (see the "reissue on a SAN-set change"
+      item under §0); files-mode runtime HTTPS add works today.
 
 ## 3. API & docs
 
