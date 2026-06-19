@@ -207,12 +207,18 @@ What you need to actually run it standalone (no nginx/proxy) and operate it at s
       frames, active connections, accept rate. Structured logging with levels.
 - [ ] **Graceful shutdown / drain.** Verify (and if needed implement) stop-accepting
       + drain-in-flight + close cleanly, so deploys don't drop connections.
-- [ ] **Config file + reload** without a restart. A JSON file describes the listener,
+- [x] **Config file + reload** without a restart. A JSON file describes the listener,
       TLS/ACME, and a unified `sites[]` (host → docroot + static opts); SIGHUP re-reads it
       transactionally and atomically hot-swaps the vhost table (same grace pattern as
       `ws_server_reload_tls`), so a static site is added by editing a file — no recompile,
       no restart. Designed in [`docs/portico-config-design.md`](docs/portico-config-design.md).
-      (This is also the domain→app routing layer the `cellar` engine plugs into.)
+      Built: `portico_config` loader (`src/config/`, CTest `config`), hot-swap `portico_router`
+      (CTest `router`), runtime cert API `ws_server_add_sni_cert` (CTest `tls_runtime`),
+      and the `portico_server` binary — SIGHUP routing reload (CTest `config_reload`) +
+      over-the-wire HTTPS runtime SNI add (CTest `config_tls`) + ACME mode. The runtime
+      cert/SNI half (`ws_server_add_sni_cert`) is also what the `cellar` engine plugs into.
+      *Open follow-up:* runtime add of a new **ACME** domain still needs a restart (the
+      manager's SAN set is fixed at startup); files-mode runtime HTTPS add works today.
 
 ## 3. API & docs
 
