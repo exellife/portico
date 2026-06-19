@@ -16,7 +16,7 @@ Rough priority: **Confidence → Operability → Performance → Trading-grade**
 
 ---
 
-## 0. TLS termination — deploy without nginx  ← IN PROGRESS
+## 0. TLS termination — deploy without nginx  ← DONE
 
 Make portico a genuinely self-contained binary: terminate TLS itself so a small
 deployment needs no nginx/proxy at all. Optional — plaintext stays the default,
