@@ -112,6 +112,9 @@ if(PORTICO_BUILD_EXAMPLES)
     target_link_libraries(autobahn_server PRIVATE portico)
     add_executable(stress_server examples/stress_server.c)
     target_link_libraries(stress_server PRIVATE portico)
+    # config-file-driven standalone server (sites[] + SIGHUP hot-reload)
+    add_executable(portico_server examples/portico_server.c)
+    target_link_libraries(portico_server PRIVATE portico)
 endif()
 
 # --- tests ---
@@ -210,6 +213,10 @@ if(PORTICO_BUILD_TESTS)
         # Name-based virtual hosting: Host -> per-vhost docroot (+ wildcard, allow-list).
         add_test(NAME vhost
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/vhost_test.sh $<TARGET_FILE:http_server>)
+        # Config-file-driven server + SIGHUP hot-reload: add a site by editing the file
+        # (zero downtime), and a broken edit keeps the running config (transactional).
+        add_test(NAME config_reload
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/config_reload_test.sh $<TARGET_FILE:portico_server>)
         # TLS: HTTPS + WSS against one TLS listener (needs openssl to mint a cert).
         find_program(OPENSSL_BIN openssl)
         if(PORTICO_TLS AND OPENSSL_BIN)
