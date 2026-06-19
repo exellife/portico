@@ -273,6 +273,16 @@ int ws_process_handshake(ws_connection_t *conn, const char *request, const ws_ca
         }
     }
 
+    /* Capture the Host header on the connection so the message layer can route by
+     * it (name-based virtual hosts / multi-app). Delivered to message callbacks via
+     * user_data (otherwise unused for WS). Stays empty if the client sent no Host. */
+    char *host = find_header_value(request, "Host");
+    if (host) {
+        snprintf(conn->host, sizeof conn->host, "%s", host);
+        free(host);
+        conn->user_data = conn->host;
+    }
+
     /* Create and send handshake response */
     char response[1024];
     int response_len = ws_create_handshake_response(&info, selected_protocol, response, sizeof(response));

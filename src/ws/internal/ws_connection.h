@@ -104,7 +104,14 @@ struct ws_connection {
                                     * or NULL. Freed via portico_http_stream_abort on close. */
 
     /* User data pointer */
-    void *user_data;               /* Application-specific data */
+    void *user_data;               /* Application-specific data. For a WS connection
+                                    * this is set to `host` below after the handshake,
+                                    * so message callbacks can route by the Host. */
+
+    /* The HTTP Host header from the WebSocket upgrade, captured at handshake so the
+     * per-message path can resolve a virtual host / app (cleared by the memset in
+     * ws_connection_init on reuse). Empty if the client sent no Host. */
+    char host[256];
 
     /* TLS (NULL = plaintext). Per-connection SSL object, created on accept when
      * the listener has a TLS context; freed in ws_connection_cleanup. */
