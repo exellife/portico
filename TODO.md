@@ -185,14 +185,15 @@ confidence per hour cheaper than any feature here.
 
 ## 2. Operability
 
-What you need to actually run it behind nginx and operate it at scale.
+What you need to actually run it standalone (no nginx/proxy) and operate it at scale.
 
 - [x] **Real client IP (proxy-aware).** `portico_req_client_ip(req)` (HTTP) +
       `portico_client_ip(server, fd, …)` (WS peer). `ws_config_t.trust_proxy` (off by
       default → a spoofed `X-Forwarded-For` is ignored); when on, prefers `X-Real-IP`
       then the leftmost `X-Forwarded-For`, else the direct peer. Spoof-safety covered in
-      `http_test.py`. *Remaining:* PROXY-protocol support; proxy-aware IP for WS
-      (capture XFF at the handshake, not just the peer).
+      `http_test.py`. Sufficient for portico's standalone deployment (it terminates TLS
+      and sees the real peer directly); the proxy-header path stays only for the rare case
+      of a trusted L7 in front. PROXY-protocol / WS-handshake XFF are not planned.
 - [x] **Accept-time allow/deny hook.** `ws_callbacks_t.on_accept(client_ip, user_data)`
       runs on the acceptor thread before any handshake/allocation; non-zero drops the peer.
       The cheap enforcement point for IP blacklists / connection caps (policy stays in the
@@ -212,9 +213,6 @@ What you need to actually run it behind nginx and operate it at scale.
       `ws_server_reload_tls`), so a static site is added by editing a file — no recompile,
       no restart. Designed in [`docs/portico-config-design.md`](docs/portico-config-design.md).
       (This is also the domain→app routing layer the `cellar` engine plugs into.)
-- [ ] **nginx deployment guide** — the WS proxy essentials (`proxy_http_version 1.1`,
-      `Upgrade`/`Connection` forwarding, `proxy_read_timeout`) and the fact that
-      client-side backpressure becomes nginx's job once it's the immediate peer.
 
 ## 3. API & docs
 
@@ -392,9 +390,6 @@ Only if the trading ambition firms up. The architecture doesn't block any of it;
 each is real, finite work. Portico's natural target is the **client-facing
 WS gateway / market-data tier**, not the matching engine.
 
-- [ ] **TLS** — postponed: deploy behind nginx for termination. Revisit in-process
-      TLS (OpenSSL/BoringSSL/wolfSSL, with the epoll↔TLS read-wants-write interplay)
-      only if the extra proxy hop's latency becomes unacceptable.
 - [ ] **Message sequence numbers / gap detection** so a client can detect and resync
       a missed message (pairs with the slow-consumer disconnect already shipped).
 - [ ] **Admission control / rate limiting / per-client quotas.**
