@@ -63,12 +63,14 @@ if(PORTICO_TLS)
 endif()
 
 # --- portico library ---
-file(GLOB PORTICO_WS_SOURCES   CONFIGURE_DEPENDS src/ws/*.c)
-file(GLOB PORTICO_HTTP_SOURCES CONFIGURE_DEPENDS src/http/*.c)
-file(GLOB PORTICO_SOURCES      CONFIGURE_DEPENDS src/*.c)
+file(GLOB PORTICO_WS_SOURCES     CONFIGURE_DEPENDS src/ws/*.c)
+file(GLOB PORTICO_HTTP_SOURCES   CONFIGURE_DEPENDS src/http/*.c)
+file(GLOB PORTICO_CONFIG_SOURCES CONFIGURE_DEPENDS src/config/*.c)
+file(GLOB PORTICO_SOURCES        CONFIGURE_DEPENDS src/*.c)
 
 add_library(portico STATIC
-    ${PORTICO_WS_SOURCES} ${PORTICO_HTTP_SOURCES} ${PORTICO_SOURCES})
+    ${PORTICO_WS_SOURCES} ${PORTICO_HTTP_SOURCES}
+    ${PORTICO_CONFIG_SOURCES} ${PORTICO_SOURCES})
 target_include_directories(portico
     PUBLIC  src/ws/include include
     PRIVATE src/ws src/ws/internal src/http)
@@ -76,7 +78,7 @@ target_include_directories(portico
 # portico's own http/ code instead.
 set_source_files_properties(${PORTICO_WS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_options(portico PRIVATE -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(portico PUBLIC Threads::Threads picohttpparser portico_aio)
+target_link_libraries(portico PUBLIC Threads::Threads picohttpparser portico_aio cjson)
 if(PORTICO_TLS)
     target_link_libraries(portico PUBLIC OpenSSL::SSL OpenSSL::Crypto)
     target_compile_definitions(portico PUBLIC PORTICO_TLS=1)
@@ -131,6 +133,12 @@ if(PORTICO_BUILD_TESTS)
     add_executable(acme_parse_test tests/acme_parse_test.c)
     target_link_libraries(acme_parse_test PRIVATE portico_acme)
     add_test(NAME acme_parse COMMAND acme_parse_test)
+
+    # JSON config-file loader: schema parse + validation (ports, docroots, hosts,
+    # tls modes, per-site SNI). Pure, offline — fixtures written to temp files.
+    add_executable(config_test tests/config_test.c)
+    target_link_libraries(config_test PRIVATE portico)
+    add_test(NAME config COMMAND config_test)
 
     # ACME HTTP-01 responder: token store + well-known matcher + standalone :80
     # listener, exercised over a real loopback HTTP GET. Plaintext, no OpenSSL.
