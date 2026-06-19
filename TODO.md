@@ -206,7 +206,12 @@ What you need to actually run it behind nginx and operate it at scale.
       frames, active connections, accept rate. Structured logging with levels.
 - [ ] **Graceful shutdown / drain.** Verify (and if needed implement) stop-accepting
       + drain-in-flight + close cleanly, so deploys don't drop connections.
-- [ ] **Config reload** without a restart (optional).
+- [ ] **Config file + reload** without a restart. A JSON file describes the listener,
+      TLS/ACME, and a unified `sites[]` (host → docroot + static opts); SIGHUP re-reads it
+      transactionally and atomically hot-swaps the vhost table (same grace pattern as
+      `ws_server_reload_tls`), so a static site is added by editing a file — no recompile,
+      no restart. Designed in [`docs/portico-config-design.md`](docs/portico-config-design.md).
+      (This is also the domain→app routing layer the `cellar` engine plugs into.)
 - [ ] **nginx deployment guide** — the WS proxy essentials (`proxy_http_version 1.1`,
       `Upgrade`/`Connection` forwarding, `proxy_read_timeout`) and the fact that
       client-side backpressure becomes nginx's job once it's the immediate peer.
