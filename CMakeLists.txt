@@ -221,6 +221,11 @@ if(PORTICO_BUILD_TESTS)
             # SIGHUP TLS cert hot-reload: new certs served, server stays up (zero downtime).
             add_test(NAME reload
                 COMMAND bash ${CMAKE_SOURCE_DIR}/tests/reload_test.sh $<TARGET_FILE:http_server>)
+            # Runtime per-host cert add (ws_server_add_sni_cert): build-group/atomic-swap/
+            # rollback lifecycle + ownership, in-process (self-mints certs via openssl).
+            add_executable(tls_runtime_test tests/tls_runtime_test.c)
+            target_link_libraries(tls_runtime_test PRIVATE portico)
+            add_test(NAME tls_runtime COMMAND tls_runtime_test)
             # ACME verifying HTTPS client: chain + hostname verification (local TLS server).
             add_executable(https_probe tests/https_probe.c)
             target_link_libraries(https_probe PRIVATE portico_acme)

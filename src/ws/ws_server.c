@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -318,6 +319,14 @@ void ws_server_destroy_internal(ws_server_t *server) {
         ws_tls_ctx_free(internal->tls_ctx_retired);
         internal->tls_ctx_retired = NULL;
     }
+    /* Runtime-added SNI cert specs (the SSL_CTXs themselves live in the freed groups). */
+    for (size_t i = 0; i < internal->rt_sni_n; i++) {
+        free(internal->rt_sni[i].host);
+        free(internal->rt_sni[i].cert);
+        free(internal->rt_sni[i].key);
+    }
+    free(internal->rt_sni);
+    internal->rt_sni = NULL; internal->rt_sni_n = internal->rt_sni_cap = 0;
 
     /* Destroy global hash table */
     if (internal->global_hash) {
@@ -342,43 +351,110 @@ void ws_server_destroy_internal(ws_server_t *server) {
     WS_DEBUG_LOG("WebSocket server destroyed");
 }
 
-/* Hot-reload TLS certificates without a restart (e.g. after ACME renewal). Rebuilds
- * the context group from the SAME configured cert/key paths — which must now hold
- * the new certs on disk — and atomically swaps it in; new connections use it at
- * once, in-flight ones keep their old SSL objects. Call from a normal thread (NOT a
- * signal handler): wire SIGHUP to set a flag and invoke this from the main loop.
- * Returns 0 on success, -1 if not a TLS listener or a cert failed to load (the
- * running certs are kept on failure). */
-int ws_server_reload_tls_internal(ws_server_t *server) {
-    ws_server_internal_t *s = (ws_server_internal_t *)server;
-    if (!s || !s->tls_ctx) return -1;
-
+/* Build a fresh TLS context group from the configured default cert + the fixed
+ * config SNI certs + any runtime-added (ws_server_add_sni_cert) certs. Returns the
+ * new group, or NULL if any cert fails to load (caller keeps the running group). */
+static void *build_tls_group(ws_server_internal_t *s) {
     void *ng = ws_tls_ctx_create(s->config.tls_cert_file, s->config.tls_key_file);
     if (!ng) {
-        WS_ERROR_LOG("TLS reload: failed to load '%s' (keeping current certs)",
+        WS_ERROR_LOG("TLS: failed to load default cert '%s'",
                      s->config.tls_cert_file ? s->config.tls_cert_file : "?");
-        return -1;
+        return NULL;
     }
     for (size_t i = 0; i < s->config.tls_sni_cert_count; i++) {
         const ws_tls_sni_cert_t *c = &s->config.tls_sni_certs[i];
         if (ws_tls_ctx_add_sni(ng, c->hostname, c->cert_file, c->key_file) != 0) {
-            WS_ERROR_LOG("TLS reload: failed SNI cert for '%s' (keeping current certs)",
-                         c->hostname ? c->hostname : "?");
-            ws_tls_ctx_free(ng);
-            return -1;
+            WS_ERROR_LOG("TLS: failed SNI cert for '%s'", c->hostname ? c->hostname : "?");
+            ws_tls_ctx_free(ng); return NULL;
         }
     }
+    for (size_t i = 0; i < s->rt_sni_n; i++) {
+        const struct ws_rt_sni *c = &s->rt_sni[i];
+        if (ws_tls_ctx_add_sni(ng, c->host, c->cert, c->key) != 0) {
+            WS_ERROR_LOG("TLS: failed runtime SNI cert for '%s'", c->host ? c->host : "?");
+            ws_tls_ctx_free(ng); return NULL;
+        }
+    }
+    return ng;
+}
 
-    /* Swap in the new group; new connections pick it up immediately. Free the group
-     * retired by the PREVIOUS reload — any handshake that referenced it has long
-     * since completed (reloads are far apart) — then retire the one just replaced.
-     * In-flight SSLs from the retired group keep their SSL_CTX alive via OpenSSL
-     * refcounting; this grace period covers the group struct + its SNI callback arg. */
+/* Atomically publish `ng` as the live group. Free the group retired one swap ago —
+ * any handshake that referenced it has long completed (swaps are reloads / domain
+ * additions, spaced far apart relative to a handshake) — then retire the one just
+ * replaced. In-flight SSLs keep their SSL_CTX alive via OpenSSL refcounting; this
+ * one-generation grace covers the group struct + its SNI callback arg. (Not safe to
+ * call concurrently with itself: drive reloads/adds from a single thread.) */
+static void swap_tls_group(ws_server_internal_t *s, void *ng) {
     void *old = atomic_exchange(&s->tls_ctx, ng);
     if (s->tls_ctx_retired) ws_tls_ctx_free(s->tls_ctx_retired);
     s->tls_ctx_retired = old;
+}
 
+/* Hot-reload TLS certificates without a restart (e.g. after ACME renewal). Rebuilds
+ * the context group from the configured paths — which must now hold the new certs on
+ * disk — plus any runtime-added SNI certs, and atomically swaps it in; new
+ * connections use it at once, in-flight ones keep their old SSL objects. Call from a
+ * normal thread (NOT a signal handler): wire SIGHUP to set a flag and invoke from the
+ * main loop. Returns 0, or -1 if not a TLS listener or a cert failed (certs kept). */
+int ws_server_reload_tls_internal(ws_server_t *server) {
+    ws_server_internal_t *s = (ws_server_internal_t *)server;
+    if (!s || !s->tls_ctx) return -1;
+    void *ng = build_tls_group(s);
+    if (!ng) { WS_ERROR_LOG("TLS reload failed; keeping current certs"); return -1; }
+    swap_tls_group(s, ng);
     WS_DEBUG_LOG("TLS certificates reloaded");
+    return 0;
+}
+
+/* Add (or, for a host already added at runtime, update) a per-host SNI cert on a
+ * running TLS listener, then rebuild the group and swap it atomically. The new domain
+ * is presented immediately to new handshakes; reloads preserve it. Returns 0, or -1
+ * if not a TLS listener, args are missing, or the cert failed to load (group kept). */
+int ws_server_add_sni_cert_internal(ws_server_t *server, const char *hostname,
+                                    const char *cert_file, const char *key_file) {
+    ws_server_internal_t *s = (ws_server_internal_t *)server;
+    if (!s || !s->tls_ctx) return -1;                  /* plaintext listener */
+    if (!hostname || !cert_file || !key_file) return -1;
+
+    char *nc = strdup(cert_file), *nk = strdup(key_file);
+    if (!nc || !nk) { free(nc); free(nk); return -1; }
+
+    /* Update an existing runtime entry for this host in place, else append a new one. */
+    struct ws_rt_sni *slot = NULL;
+    for (size_t i = 0; i < s->rt_sni_n; i++)
+        if (s->rt_sni[i].host && strcasecmp(s->rt_sni[i].host, hostname) == 0) {
+            slot = &s->rt_sni[i]; break;
+        }
+
+    char *old_cert = NULL, *old_key = NULL;
+    int appended = 0;
+    if (slot) {
+        old_cert = slot->cert; old_key = slot->key;   /* stash for rollback */
+        slot->cert = nc; slot->key = nk;
+    } else {
+        if (s->rt_sni_n == s->rt_sni_cap) {
+            size_t ncap = s->rt_sni_cap ? s->rt_sni_cap * 2 : 4;
+            void *p = realloc(s->rt_sni, ncap * sizeof *s->rt_sni);
+            if (!p) { free(nc); free(nk); return -1; }
+            s->rt_sni = p; s->rt_sni_cap = ncap;
+        }
+        char *nh = strdup(hostname);
+        if (!nh) { free(nc); free(nk); return -1; }
+        slot = &s->rt_sni[s->rt_sni_n];
+        slot->host = nh; slot->cert = nc; slot->key = nk;
+        s->rt_sni_n++; appended = 1;
+    }
+
+    void *ng = build_tls_group(s);
+    if (!ng) {                                          /* roll back the spec mutation */
+        if (appended) { free(slot->host); free(slot->cert); free(slot->key); s->rt_sni_n--; }
+        else          { free(slot->cert); free(slot->key); slot->cert = old_cert; slot->key = old_key; }
+        WS_ERROR_LOG("TLS add SNI cert for '%s' failed; keeping current certs", hostname);
+        return -1;
+    }
+    if (!appended) { free(old_cert); free(old_key); } /* committed: drop stashed strings */
+    swap_tls_group(s, ng);
+    WS_DEBUG_LOG("TLS SNI cert added for '%s'", hostname);
     return 0;
 }
 

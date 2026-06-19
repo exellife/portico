@@ -238,6 +238,17 @@ void ws_server_destroy(ws_server_t *server);
  * cert failed to load (the running certs are kept). */
 int ws_server_reload_tls(ws_server_t *server);
 
+/* Add a per-host (SNI) certificate to a RUNNING TLS listener — for serving a new
+ * HTTPS domain without a restart (e.g. an engine provisioning a new app/domain,
+ * after ACME issues its cert). Rebuilds the cert group (default + config SNI +
+ * runtime-added) and atomically swaps it in; the new domain is presented to new
+ * handshakes immediately, in-flight ones are undisturbed, and a later reload keeps
+ * it. If `hostname` was already added at runtime, its cert/key are updated. Call
+ * from a normal context, single-threaded w.r.t. other reloads/adds. Returns 0, or
+ * -1 if not a TLS server, args are missing, or the cert failed to load (group kept). */
+int ws_server_add_sni_cert(ws_server_t *server, const char *hostname,
+                           const char *cert_file, const char *key_file);
+
 /**
  * Start the WebSocket server (non-blocking).
  * 

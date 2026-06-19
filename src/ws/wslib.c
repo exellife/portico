@@ -60,6 +60,12 @@ int ws_server_reload_tls(ws_server_t *server) {
     return ws_server_reload_tls_internal(server);
 }
 
+int ws_server_add_sni_cert(ws_server_t *server, const char *hostname,
+                           const char *cert_file, const char *key_file) {
+    if (!server || !hostname || !cert_file || !key_file) return -1;
+    return ws_server_add_sni_cert_internal(server, hostname, cert_file, key_file);
+}
+
 int ws_server_start(ws_server_t *server, const ws_callbacks_t *callbacks) {
     if (!server || !callbacks) {
         return -1;

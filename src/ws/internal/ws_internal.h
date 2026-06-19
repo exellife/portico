@@ -237,6 +237,13 @@ typedef struct ws_server {
      * the one-reload grace period before it can be freed (see ws_server_reload_tls). */
     _Atomic(void *) tls_ctx;
     void           *tls_ctx_retired;
+
+    /* Per-host (SNI) certs added at RUNTIME via ws_server_add_sni_cert (e.g. as an
+     * engine provisions new domains), beyond the fixed config.tls_sni_certs. The
+     * group is rebuilt from config.tls_cert_file + config.tls_sni_certs + this list,
+     * so runtime certs survive a reload too. Owned strings; freed at destroy. */
+    struct ws_rt_sni { char *host; char *cert; char *key; } *rt_sni;
+    size_t rt_sni_n, rt_sni_cap;
 } ws_server_internal_t;
 
 /* ============================================================================
@@ -248,6 +255,10 @@ ws_server_t* ws_server_create_internal(const ws_config_t *config);
 
 /* Hot-reload TLS certs from the configured paths (SIGHUP). */
 int ws_server_reload_tls_internal(ws_server_t *server);
+
+/* Add a per-host (SNI) cert to a running TLS listener (rebuild group + atomic swap). */
+int ws_server_add_sni_cert_internal(ws_server_t *server, const char *hostname,
+                                    const char *cert_file, const char *key_file);
 
 /* Destroy server */
 void ws_server_destroy_internal(ws_server_t *server);
