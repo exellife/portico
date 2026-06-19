@@ -22,7 +22,9 @@
 #include <pthread.h>
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <strings.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <openssl/pem.h>
 
 int portico_acme_cert_days_left(const char *cert_path) {
@@ -36,6 +38,40 @@ int portico_acme_cert_days_left(const char *cert_path) {
     int ok = ASN1_TIME_diff(&day, &sec, NULL, X509_get0_notAfter(x));   /* now → notAfter */
     X509_free(x);
     return ok ? day : -1;
+}
+
+/* 1 iff every name in `domains` appears as a DNS SAN on the leaf cert (case-insensitive
+ * exact). Missing/unparseable cert, or any domain absent ⇒ 0; no domains ⇒ 1. */
+int portico_acme_cert_covers(const char *cert_path, const char *const *domains, size_t ndomains) {
+    if (!domains || ndomains == 0) return 1;            /* no constraint */
+    if (!cert_path) return 0;
+    FILE *f = fopen(cert_path, "r");
+    if (!f) return 0;
+    X509 *x = PEM_read_X509(f, NULL, NULL, NULL);
+    fclose(f);
+    if (!x) return 0;
+
+    GENERAL_NAMES *sans = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+    int n_sans = sans ? sk_GENERAL_NAME_num(sans) : 0;
+    int covered = 1;
+    for (size_t d = 0; d < ndomains && covered; d++) {
+        const char *want = domains[d];
+        if (!want) { covered = 0; break; }
+        size_t wl = strlen(want);
+        int found = 0;
+        for (int i = 0; i < n_sans && !found; i++) {
+            const GENERAL_NAME *gn = sk_GENERAL_NAME_value(sans, i);
+            if (gn->type != GEN_DNS) continue;
+            const ASN1_IA5STRING *dns = gn->d.dNSName;
+            const char *s = (const char *)ASN1_STRING_get0_data(dns);
+            int sl = ASN1_STRING_length(dns);
+            if (sl >= 0 && (size_t)sl == wl && s && strncasecmp(s, want, wl) == 0) found = 1;
+        }
+        covered = found;
+    }
+    if (sans) GENERAL_NAMES_free(sans);
+    X509_free(x);
+    return covered;
 }
 
 int portico_acme_cert_needs_renewal(const char *cert_path, int renew_within_days) {
@@ -65,8 +101,9 @@ static int write_public(const char *path, const char *data, size_t len) {
 
 int portico_acme_manager_ensure(portico_acme_manager_t *m) {
     if (!m) return -1;
-    if (!portico_acme_cert_needs_renewal(m->cfg.cert_path, m->cfg.renew_within_days))
-        return 0;   /* still current — do not bother the CA */
+    if (!portico_acme_cert_needs_renewal(m->cfg.cert_path, m->cfg.renew_within_days)
+        && portico_acme_cert_covers(m->cfg.cert_path, m->cfg.domains, m->cfg.ndomains))
+        return 0;   /* still current AND covers every configured domain — leave the CA alone */
 
     portico_acme_config_t oc = {
         .directory_url    = m->cfg.directory_url,
@@ -162,6 +199,9 @@ void portico_acme_manager_stop(portico_acme_manager_t *m) {
 
 int portico_acme_cert_days_left(const char *cert_path) { (void)cert_path; return -1; }
 int portico_acme_cert_needs_renewal(const char *cert_path, int d) { (void)cert_path; (void)d; return 1; }
+int portico_acme_cert_covers(const char *cert_path, const char *const *domains, size_t ndomains) {
+    (void)cert_path; (void)domains; (void)ndomains; return 1;
+}
 portico_acme_manager_t *portico_acme_manager_start(const portico_acme_manager_config_t *cfg) {
     (void)cfg; return NULL;
 }

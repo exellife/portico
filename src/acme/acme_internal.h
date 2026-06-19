@@ -196,6 +196,12 @@ int portico_acme_cert_days_left(const char *cert_path);
  * of expiry — i.e. it should be (re)issued now. */
 int portico_acme_cert_needs_renewal(const char *cert_path, int renew_within_days);
 
+/* 1 if the leaf cert at `cert_path` carries a DNS subjectAltName covering EVERY name
+ * in `domains` (case-insensitive exact match); 0 if any is missing, or the cert is
+ * absent/unparseable. Lets the manager reissue on a domain-set change, not only on
+ * expiry. ndomains == 0 ⇒ 1 (no constraint). */
+int portico_acme_cert_covers(const char *cert_path, const char *const *domains, size_t ndomains);
+
 typedef struct {
     const char        *directory_url;      /* ACME directory (staging/production) */
     const char        *account_key_path;   /* account key PEM (load or create) */

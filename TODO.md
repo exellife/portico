@@ -154,19 +154,19 @@ Optional follow-ups:
             `curl https://…` 200 with no -k. Deploy runbook: docs/acme-deploy.md.
       (External certbot --webroot remains the works-today alternative; Caddy is the
       reference for a server with built-in ACME.)
-- [ ] **ACME: reissue on a SAN-set change, not just expiry.** Today
-      `portico_acme_cert_needs_renewal` (src/acme/acme_manager.c:41) checks the leaf's
-      *expiry only* — it does not compare the cert's SAN list against the configured
-      `domains`. So adding a domain to a live ACME deployment does NOT trigger a reissue:
-      the existing (unexpired) cert keeps serving and the new host falls back to it with a
-      CN mismatch. Workaround used in production: move the cert aside + restart to force a
-      fresh multi-SAN issuance (a ~10s blip — see below). Fix: have the manager read the
-      current cert's SANs and reissue when they don't cover `domains` (superset check), so
-      `ensure()` reissues on a domain-set change too. Unblocks **seamless runtime ACME
-      domain add**: an engine (cellar) provisioning a new app domain → manager reissues a
-      multi-SAN cert → `on_renewed` hot-swaps it, no restart. Verified live on the Oracle
-      VM that the move-aside+restart path issues a correct 2-SAN cert (portico-test +
-      portico-second .duckdns.org, both trusted).
+- [x] **ACME: reissue on a SAN-set change, not just expiry.** `ensure()` now reissues
+      when the on-disk cert's DNS SANs don't cover every configured domain, not only on
+      expiry — via `portico_acme_cert_covers()` (src/acme/acme_manager.c) reading the leaf
+      subjectAltName (case-insensitive, superset check) alongside the expiry check. So
+      **adding a domain to an ACME config + restart now auto-issues a fresh multi-SAN
+      cert** — the move-cert-aside hack (used once on the Oracle VM for portico-second) is
+      no longer needed. Tested: `acme_manager` CTest +9 checks (coverage true/false, CN-only
+      ⇒ uncovered, missing ⇒ uncovered, current-but-uncovered ⇒ reissue attempted);
+      ASan-clean; suite 28/28; acme_pebble e2e still green.
+      *Remaining for fully restart-FREE add:* `portico_server`'s SIGHUP reload must also
+      update the running manager's domain set + call `ensure()` (today the manager's
+      domains are fixed at startup, so a reload swaps routing but not the cert's SAN set).
+      That last wire is what makes cellar's provisioning seamless.
 - [x] **Built-in Host→vhost router** (`portico_vhost_t`, `portico_res_vhost`) — route a
       request to a per-host static config by the Host header: strips `:port`, matches
       case-insensitively (exact or `*.` wildcard), serves via portico_res_static. A
