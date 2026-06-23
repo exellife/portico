@@ -185,21 +185,6 @@ paths we *didn't* stress. We found five serious bugs in one session in code that
 passed conformance; the WS core had never been concurrency-tested before. Buy
 confidence per hour cheaper than any feature here.
 
-- [ ] **Tunnel heartbeat misses half-open sessions (field-confirmed outage).** The
-      portico-tunnel relay↔agent session wedges every few days in production
-      (`portico-test.duckdns.org`): the **data path dies while the TCP stays `ESTAB`**,
-      so forwards return `000` but both ends still report "connected" (`ss` shows the
-      socket, `systemctl` shows active). `--hb 20` + the stale-connection reaper don't
-      catch it because liveness rides TCP-level signals, which a half-open socket passes.
-      It alternates sides — once the **agent** (no ESTAB at all → needs an agent restart),
-      once the **relay** (agent still connected but the forward is dead → needs a *relay*
-      restart, after which the agent re-homes onto the fresh relay). **Fix:** make the
-      heartbeat prove the *data path*, not the socket — an app-level ping/pong carried
-      *over the tunnel* (relay→agent→relay) on the `--hb` interval, and tear down +
-      force-reconnect any session that misses N consecutive beats. Currently band-aided
-      by two 60s systemd-timer watchdogs (Oracle restarts `portico-relay` on a
-      loopback-SNI `/health` `000`; srvlab restarts `portico-agent` when it holds no
-      ESTAB to relay `:7443`) — retire those once the heartbeat is real.
 - [ ] **Broaden fuzz/soak under sanitizers.** Exercise the paths the current fuzz
       mode misses: fragmentation reassembly under load, partial/dribbled frames,
       pathological frame sizes, the **buffer-pool expansion path** (never stressed),
