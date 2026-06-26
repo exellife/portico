@@ -404,6 +404,60 @@ the foundation, built first as a standalone, isolation-tested library.
 - [ ] **Plaintext zero-copy** `sendfile`/splice fast path — TLS connections excluded
       (`sendfile` can't encrypt; same limit nginx has without kTLS).
 
+## 4c. Application-driven async responses — the long-poll / SSE primitive
+
+Today an HTTP handler is synchronous: fill `res`, `return 0`, portico sends it. The
+only "respond later" path is internal to file serving — `portico_res_file` **parks**
+the connection and an aio completion produces the body later (§4b). Exposing that same
+parking + cross-thread-completion machinery as a **general, application-driven**
+primitive would let a consumer hold a request open and finish it later from any thread —
+the transport foundation for **long-polling, Server-Sent Events, and any async
+endpoint**. Motivating consumer: cellar's realtime layer wants a poll/stream fallback to
+WebSocket for clients on **poor mobile connectivity** (Kyrgyzstan), where a persistent
+socket is the *liability* — short cursored request cycles survive NAT-mapping timeouts /
+tower handoffs / radio sleep, and a held request is just a latency optimization over
+that floor. portico stays generic: it owns *parking the fd and resuming it safely*; the
+cursor, the "what changed" decision, and delivery scoping live entirely in the consumer
+(portico knows nothing about auth/SQL/cursors).
+
+The machinery already exists for file serving — this is "generalize and expose," not
+"invent async":
+
+- [ ] **Defer primitive.** Let a handler say *don't send yet* and get an opaque token
+      instead of filling `res` — e.g. `portico_res_defer(res) → portico_async_token_t*`.
+      After it, portico keeps the connection parked (registered in epoll, input
+      buffered-not-processed, not closed) exactly as the `portico_res_file`
+      read-in-flight path already does in `src/http/connection.c`, but driven by the
+      application rather than an aio completion.
+- [ ] **Cross-thread completion.** `portico_async_complete(token, status, headers, body,
+      len)` callable from **any** thread (e.g. a consumer's DB/publish thread), handing
+      the response to the loop that owns that fd via the existing eventfd/MPSC seam — the
+      same one WS sends and aio completions already use — then sent through the normal
+      EPOLLOUT backpressure path. No socket write off the owning thread.
+- [ ] **Timeout.** A deadline per parked token so a vanished client can't pin an fd
+      forever; on expiry portico completes it with a caller-chosen empty status (200/204)
+      and the client re-polls. Reuse the idle-reaper / `last_activity` machinery that
+      already times out a stalled stream reader (§4b).
+- [ ] **Disconnect safety (the fiddly part).** If the client closes while parked, the
+      token must be invalidated so a later `complete` from another thread is a safe
+      no-op — the same **connection `generation` guard** that already stops a file-read
+      completion from writing to a recycled socket. This is audit-grade concurrency (cf.
+      the H-7 reaper double-close / fd-reuse race already fixed); build it with tests
+      under TSan/ASan, not in a hurry.
+- [ ] **SSE convenience (optional).** A thin helper over the primitive for
+      `text/event-stream`: keep the connection parked and append successive `data:`
+      events (a `complete`-like write that does *not* close), so a client's
+      `Last-Event-ID` resume maps onto the consumer's cursor. Long-poll = "complete once,
+      then close"; SSE = "append and hold" — same parking core.
+
+Stays **out** of portico: the rev/sequence cursor, the "what changed since" query, and
+delivery scoping — the consumer's job (cellar reuses its `_sync_seq` + `/sync/pull` +
+policy). Worth building when there are ≥2 reasons to want async responses (long-poll
+**and** SSE both qualify); until then a consumer's client-driven short-polling over
+ordinary synchronous requests needs **zero** portico work and is the more
+network-resilient fallback anyway. Related: §5's message-sequence / gap-detection item
+is the WS-side of the same "never lose an event across a reconnect" goal.
+
 ## 5. Trading-grade gateway (future / aspirational)
 
 Only if the trading ambition firms up. The architecture doesn't block any of it;
